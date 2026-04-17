@@ -1,0 +1,14 @@
+node_modules/
+build/
+prebuilds/
+*.node
+*.obj
+*.o
+*.a
+*.lib
+*.dylib
+*.so
+*.dll
+npm-debug.log*
+.DS_Store
+deps/
