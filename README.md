@@ -78,10 +78,22 @@ to close. It is safe to call `close()` more than once.
 
 ## Standalone packaging
 
-Bundle your app into a single native executable with the included `node-gui-pack` CLI:
+Bundle your app into a single native executable with the included CLI:
 
 ```bash
 npx node-gui-pack
+```
+
+You can also run from outside the project directory:
+
+```bash
+npx node-gui-pack /path/to/project
+```
+
+Override the configured entry point for a one-off build:
+
+```bash
+npx node-gui-pack --project /path/to/project --entry src/main.js
 ```
 
 Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
@@ -103,10 +115,12 @@ Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
 | Option | Default | Description |
 |--------|---------|-------------|
 | `output` | package name | Output path (`.exe` added on Windows) |
-| `main` | `pkg.main` | Entry-point script |
+| `main` | `pkg.main` then `index.js` | Entry-point script |
 | `hideConsole` | `true` | Hide console window on Windows |
 | `icon` | none | Path to `.ico` file (Windows only) |
 | `exclude` | `[]` | Extra glob patterns to exclude from the bundle |
+
+If the configured main file is missing (or excluded), packaging fails and no executable is produced.
 
 The output is a self-extracting executable that requires Node.js on the target machine.
 

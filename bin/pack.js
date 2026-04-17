@@ -5,8 +5,10 @@
  * node-gui-pack – Bundle a Node.js project that uses node-gui into a single
  * native executable.
  *
- * Usage (from the root of the target project):
+ * Usage:
  *   npx node-gui-pack
+ *   npx node-gui-pack /path/to/project
+ *   npx node-gui-pack --entry src/main.js
  *
  * Configuration is read from the project's package.json under the
  * "node-gui" → "pack" key:
@@ -75,18 +77,112 @@ const DEFAULT_EXCLUDES = [
 ];
 
 /* -------------------------------------------------------------------------
+ * CLI arguments
+ * -------------------------------------------------------------------------*/
+function parseArgs(argv) {
+    const options = {
+        projectDir: process.cwd(),
+        entryOverride: null,
+        help: false,
+    };
+
+    let projectSetFromPositional = false;
+    for (let i = 0; i < argv.length; i++) {
+        const arg = argv[i];
+        if (arg === '-h' || arg === '--help') {
+            options.help = true;
+            continue;
+        }
+        if (arg === '-p' || arg === '--project') {
+            if (i + 1 >= argv.length) throw new Error(`Missing value for ${arg}`);
+            options.projectDir = path.resolve(argv[++i]);
+            projectSetFromPositional = true;
+            continue;
+        }
+        if (arg === '-e' || arg === '--entry') {
+            if (i + 1 >= argv.length) throw new Error(`Missing value for ${arg}`);
+            options.entryOverride = argv[++i];
+            continue;
+        }
+        if (arg.startsWith('-')) {
+            throw new Error(`Unknown option: ${arg}`);
+        }
+        if (projectSetFromPositional) {
+            throw new Error('Project path specified more than once.');
+        }
+        options.projectDir = path.resolve(arg);
+        projectSetFromPositional = true;
+    }
+    return options;
+}
+
+function printHelp() {
+    const msg = [
+        'node-gui-pack - bundle a node-gui app into one executable',
+        '',
+        'Usage:',
+        '  node-gui-pack [projectDir] [--entry <path>]',
+        '  node-gui-pack --project <path> --entry <path>',
+        '',
+        'Options:',
+        '  -p, --project <path>   Project directory (default: current dir)',
+        '  -e, --entry <path>     Entry script path relative to project root',
+        '  -h, --help             Show this help message',
+    ].join('\n');
+    process.stdout.write(msg + '\n');
+}
+
+/* -------------------------------------------------------------------------
  * Load project settings
  * -------------------------------------------------------------------------*/
-function loadSettings() {
-    const pkgPath = path.join(process.cwd(), 'package.json');
+function firstString(...candidates) {
+    for (const c of candidates) {
+        if (typeof c === 'string' && c.trim()) {
+            return c;
+        }
+    }
+    return null;
+}
+
+function normalizeProjectRelPath(filePath, projectDir, label) {
+    if (typeof filePath !== 'string' || !filePath.trim()) {
+        die(`${label} must be a non-empty string.`);
+    }
+
+    let candidate = filePath.trim();
+    if (path.isAbsolute(candidate)) {
+        candidate = path.relative(projectDir, candidate);
+    }
+
+    // Keep archive paths platform-independent.
+    candidate = candidate.replace(/\\/g, '/');
+    while (candidate.startsWith('./')) {
+        candidate = candidate.slice(2);
+    }
+    candidate = path.posix.normalize(candidate);
+
+    if (!candidate || candidate === '.' || candidate === '..' || candidate.startsWith('../')) {
+        die(`${label} must resolve inside the project directory: ${filePath}`);
+    }
+
+    return candidate;
+}
+
+function loadSettings(projectDir, entryOverride) {
+    const pkgPath = path.join(projectDir, 'package.json');
     if (!fs.existsSync(pkgPath)) {
-        die('No package.json found in the current directory.');
+        die(`No package.json found in: ${projectDir}`);
     }
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const packCfg = (pkg['node-gui'] && pkg['node-gui'].pack) || {};
 
     const appName    = pkg.name || 'app';
-    const mainEntry  = packCfg.main || pkg.main || 'index.js';
+    const mainEntry  = firstString(
+        entryOverride,
+        packCfg.main,
+        pkg.main,
+        'index.js'
+    );
     const hideConsole = packCfg.hideConsole !== false; // default true
     const iconFile   = packCfg.icon || null;
     const userExcludes = Array.isArray(packCfg.exclude) ? packCfg.exclude : [];
@@ -522,12 +618,29 @@ function die(msg)  { process.stderr.write(`[node-gui-pack] ERROR: ${msg}\n`); pr
  * Main
  * -------------------------------------------------------------------------*/
 function main() {
-    const settings = loadSettings();
+    let cli;
+    try {
+        cli = parseArgs(process.argv.slice(2));
+    } catch (e) {
+        die(e.message);
+    }
+
+    if (cli.help) {
+        printHelp();
+        return;
+    }
+
+    const projectDir = cli.projectDir;
+    if (!fs.existsSync(projectDir) || !fs.statSync(projectDir).isDirectory()) {
+        die(`Project directory does not exist: ${projectDir}`);
+    }
+
+    const settings = loadSettings(projectDir, cli.entryOverride);
     const {
         pkg, appName, mainEntry, hideConsole, iconFile, userExcludes, outputBase,
     } = settings;
 
-    const projectDir = process.cwd();
+    const mainNorm = normalizeProjectRelPath(mainEntry, projectDir, 'Main entry');
     const outputPath = path.resolve(projectDir, outputBase);
 
     // Ensure output directory exists
@@ -543,28 +656,12 @@ function main() {
     }
 
     log(`Packing project: ${projectDir}`);
-    log(`Main entry:      ${mainEntry}`);
+    log(`Main entry:      ${mainNorm}`);
     log(`Output:          ${outputPath}`);
     if (iconPath && fs.existsSync(iconPath)) log(`Icon:            ${iconPath}`);
     if (process.platform === 'win32') log(`Hide console:    ${hideConsole}`);
 
-    /* 1. Compile the launcher stub ---------------------------------------- */
-    let stubPath, tmpDir;
-    try {
-        ({ stubPath, tmpDir } = compileLauncher(
-            iconPath && fs.existsSync(iconPath) ? iconPath : null,
-            appName,
-            pkg.version
-        ));
-    } catch (e) {
-        die(e.message);
-    }
-
-    /* 2. Read the launcher stub ------------------------------------------- */
-    const launcherBuf = fs.readFileSync(stubPath);
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
-
-    /* 3. Collect project files -------------------------------------------- */
+    /* 1. Collect project files -------------------------------------------- */
     const excludePatterns = [...DEFAULT_EXCLUDES, ...userExcludes];
 
     // Also exclude the output file itself (if it's inside the project dir)
@@ -579,14 +676,38 @@ function main() {
         die('No project files found to pack.');
     }
 
-    /* 4. Verify main entry exists in the collected files ------------------- */
-    const mainNorm = mainEntry.replace(/\\/g, '/');
+    /* 2. Verify main entry exists in the collected files ------------------- */
     if (!files.some(f => f.relPath === mainNorm)) {
-        warn(`Main entry "${mainEntry}" was not found among collected files.`);
+        const mainAbs = path.join(projectDir, mainNorm);
+        if (fs.existsSync(mainAbs)) {
+            die(
+                `Main entry "${mainNorm}" exists on disk but was excluded from the pack. ` +
+                'Update your "node-gui.pack.exclude" patterns.'
+            );
+        }
+        die(
+            `Main entry "${mainNorm}" was not found. ` +
+            'Set "node-gui.pack.main" in package.json to a valid file.'
+        );
     }
 
+    /* 3. Compile the launcher stub ---------------------------------------- */
+    let stubPath, tmpDir;
+    try {
+        ({ stubPath, tmpDir } = compileLauncher(
+            iconPath && fs.existsSync(iconPath) ? iconPath : null,
+            appName,
+            pkg.version
+        ));
+    } catch (e) {
+        die(e.message);
+    }
+
+    /* 4. Read the launcher stub ------------------------------------------- */
+    const launcherBuf = fs.readFileSync(stubPath);
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+
     /* 5. Build the archive buffer ----------------------------------------- */
-    const flags = hideConsole && process.platform === 'win32' ? FLAG_HIDE_CONSOLE : 0;
     // On non-Windows platforms set the flag based on user preference regardless;
     // the POSIX launcher ignores it.
     const packFlags = hideConsole ? FLAG_HIDE_CONSOLE : 0;
