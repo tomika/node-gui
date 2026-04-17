@@ -12,3 +12,4 @@ prebuilds/
 npm-debug.log*
 .DS_Store
 deps/
+dist/

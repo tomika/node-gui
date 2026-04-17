@@ -3,10 +3,22 @@
   "version": "1.0.0",
   "description": "Native GUI window with embedded browser control for Node.js applications. Opens a webview pointing to a local port so Node apps can include a GUI without requiring users to open a browser manually.",
   "main": "index.js",
+  "bin": {
+    "node-gui-pack": "bin/pack.js"
+  },
   "scripts": {
     "install": "node scripts/install-webview2.js && node-gyp rebuild",
     "build": "node scripts/install-webview2.js && node-gyp rebuild",
-    "test": "node test/test.js"
+    "test": "node test/test.js && node test/test_pack.js",
+    "demo": "node test/test_hello_gui.js",
+    "demo:pack": "node bin/pack.js"
+  },
+  "node-gui": {
+    "pack": {
+      "output": "dist/hello-gui",
+      "main": "test/test_hello_gui.js",
+      "exclude": ["src", "deps", "test/test.js", "test/test_pack.js", "scripts", ".gitignore", "binding.gyp", "README.md", "build/Release/obj", "*.pdb", "*.iobj", "*.ipdb", "*.lib", "*.exp", "node_modules/*", "!node_modules/node-addon-api"]
+    }
   },
   "keywords": [
     "gui",
