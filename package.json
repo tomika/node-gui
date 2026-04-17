@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Native GUI window with embedded browser control for Node.js applications. Opens a webview pointing to a local port so Node apps can include a GUI without requiring users to open a browser manually.",
   "main": "index.js",
+  "types": "index.d.ts",
   "bin": {
     "node-gui-pack": "bin/pack.js"
   },
@@ -31,8 +32,27 @@
     "webkit",
     "wkwebview"
   ],
-  "author": "",
+  "author": "tomika",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tomika/node-gui.git"
+  },
+  "homepage": "https://github.com/tomika/node-gui#readme",
+  "bugs": {
+    "url": "https://github.com/tomika/node-gui/issues"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin/",
+    "src/",
+    "scripts/",
+    "binding.gyp",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md"
+  ],
   "dependencies": {
     "node-addon-api": "^8.3.1"
   },

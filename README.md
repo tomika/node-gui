@@ -1,5 +1,7 @@
 # node-gui
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Native GUI window with an embedded browser control for Node.js applications.
 Opens a platform-native webview pointing to `http://localhost:<port>` so your
 Node app can ship with a GUI – users never need to open a browser manually.
@@ -33,27 +35,33 @@ must be present (it ships with Windows 10 1803+ and Windows 11).
 ## Usage
 
 ```js
+const http = require('http');
 const gui = require('node-gui');
 
-// Open a native window that loads http://localhost:3000
-const win = gui.open({
-  width: 1024,
-  height: 768,
-  port: 3000,
-  title: 'My App',       // optional, defaults to "node-gui"
-  onClose: () => {        // optional callback
-    console.log('Window closed');
-    process.exit(0);
-  },
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html' });
+  res.end('<html><head><title>My App</title></head><body><h1>Hello!</h1></body></html>');
 });
 
-// Programmatically close the window (safe to call multiple times)
-win.close();
+server.listen(0, '127.0.0.1', () => {
+  const win = gui.open({
+    width: 1024,
+    height: 768,
+    port: server.address().port,
+    onClose: () => {
+      server.close();
+      process.exit(0);
+    },
+  });
+});
 ```
 
-### API
+The window title is automatically synced from the HTML `<title>` element.
+Calling `window.close()` in JavaScript closes the native window.
 
-#### `gui.open(options)` → `{ close() }`
+## API
+
+### `gui.open(options)` → `{ close() }`
 
 Opens a native window with an embedded browser navigating to
 `http://localhost:<port>`.
@@ -63,20 +71,71 @@ Opens a native window with an embedded browser navigating to
 | `width` | `number` | yes | Initial window width in pixels |
 | `height` | `number` | yes | Initial window height in pixels |
 | `port` | `number` | yes | Localhost port to connect to (1–65535) |
-| `title` | `string` | no | Window title (default: `"node-gui"`) |
 | `onClose` | `function` | no | Called when the window is closed |
 
 Returns an object with a **`close()`** method that requests the native window
 to close. It is safe to call `close()` more than once.
 
+## Standalone packaging
+
+Bundle your app into a single native executable with the included `node-gui-pack` CLI:
+
+```bash
+npx node-gui-pack
+```
+
+Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
+
+```json
+{
+  "node-gui": {
+    "pack": {
+      "output": "dist/myapp",
+      "main": "src/index.js",
+      "hideConsole": true,
+      "icon": "assets/icon.ico",
+      "exclude": ["src", "test"]
+    }
+  }
+}
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `output` | package name | Output path (`.exe` added on Windows) |
+| `main` | `pkg.main` | Entry-point script |
+| `hideConsole` | `true` | Hide console window on Windows |
+| `icon` | none | Path to `.ico` file (Windows only) |
+| `exclude` | `[]` | Extra glob patterns to exclude from the bundle |
+
+The output is a self-extracting executable that requires Node.js on the target machine.
+
+## Building from source
+
+```bash
+git clone https://github.com/tomika/node-gui.git
+cd node-gui
+npm install
+npm run build
+npm test
+```
+
 ## Architecture
 
 The package is a [N-API](https://nodejs.org/api/n-api.html) C++ addon built
-with [node-addon-api](https://github.com/nicedoc/node-addon-api).  The webview
+with [node-addon-api](https://github.com/nicedoc/node-addon-api). The webview
 runs on a dedicated background thread so it does not block the Node.js event
-loop.  Communication between the Node thread and the GUI thread uses N-API
+loop. Communication between the Node thread and the GUI thread uses N-API
 thread-safe functions and platform-specific message posting (GLib idle sources
 on Linux, `dispatch_async` on macOS, `PostMessage` on Windows).
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+[MIT](LICENSE)
 
 ## License
 

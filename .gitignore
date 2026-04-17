@@ -13,3 +13,13 @@ npm-debug.log*
 .DS_Store
 deps/
 dist/
+.env
+.env.*
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.pdb
+*.iobj
+*.ipdb
