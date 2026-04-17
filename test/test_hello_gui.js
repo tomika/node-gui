@@ -25,6 +25,25 @@ const HTML = `<!DOCTYPE html>
       color: #fff;
     }
     h1 { font-size: 3rem; margin-bottom: 1.5rem; }
+    .form-group {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 1.5rem;
+    }
+    label { font-size: 1.1rem; }
+    input[type="text"] {
+      padding: 10px 16px;
+      font-size: 1.1rem;
+      border: 2px solid #fff;
+      border-radius: 8px;
+      background: rgba(255,255,255,0.15);
+      color: #fff;
+      outline: none;
+    }
+    input[type="text"]::placeholder { color: rgba(255,255,255,0.6); }
+    input[type="text"]:focus { background: rgba(255,255,255,0.25); }
+    .buttons { display: flex; gap: 12px; }
     button {
       padding: 12px 32px;
       font-size: 1.1rem;
@@ -40,11 +59,42 @@ const HTML = `<!DOCTYPE html>
 </head>
 <body>
   <h1>Hello World!</h1>
-  <button onclick="window.close()">Close Window</button>
+  <div class="form-group">
+    <label for="name">Name:</label>
+    <input type="text" id="name" placeholder="Enter your name">
+  </div>
+  <div class="buttons">
+    <button onclick="sayHello()">Say Hello</button>
+    <button onclick="window.close()">Close Window</button>
+  </div>
+  <script>
+    async function sayHello() {
+      const name = document.getElementById('name').value.trim();
+      if (!name) { alert('Please enter a name.'); return; }
+      const res = await fetch('/hello', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const data = await res.json();
+      alert(data.message);
+    }
+  </script>
 </body>
 </html>`;
 
-const server = http.createServer((_req, res) => {
+const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/hello') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      let name;
+      try { name = JSON.parse(body).name; } catch (_) { name = ''; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Hello ' + name + '!' }));
+    });
+    return;
+  }
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end(HTML);
 });
