@@ -76,6 +76,22 @@ const DEFAULT_EXCLUDES = [
     'npm-debug.log*',
 ];
 
+// When node-gui is used as a dependency in another project, keep only the
+// minimal runtime artifacts from node_modules/node-gui.
+const NODE_GUI_RUNTIME_KEEP_RULES = [
+    'node_modules/node-gui/*',
+    '!node_modules/node-gui/index.js',
+    '!node_modules/node-gui/package.json',
+    '!node_modules/node-gui/build',
+    'node_modules/node-gui/build/*',
+    '!node_modules/node-gui/build/Release',
+    '!node_modules/node-gui/build/Debug',
+    'node_modules/node-gui/build/Release/*',
+    'node_modules/node-gui/build/Debug/*',
+    '!node_modules/node-gui/build/Release/node_gui.node',
+    '!node_modules/node-gui/build/Debug/node_gui.node',
+];
+
 /* -------------------------------------------------------------------------
  * CLI arguments
  * -------------------------------------------------------------------------*/
@@ -662,7 +678,11 @@ function main() {
     if (process.platform === 'win32') log(`Hide console:    ${hideConsole}`);
 
     /* 1. Collect project files -------------------------------------------- */
-    const excludePatterns = [...DEFAULT_EXCLUDES, ...userExcludes];
+    const excludePatterns = [
+        ...DEFAULT_EXCLUDES,
+        ...NODE_GUI_RUNTIME_KEEP_RULES,
+        ...userExcludes,
+    ];
 
     // Also exclude the output file itself (if it's inside the project dir)
     const relOutput = path.relative(projectDir, outputPath).replace(/\\/g, '/');

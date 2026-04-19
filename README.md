@@ -122,6 +122,11 @@ Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
 
 If the configured main file is missing (or excluded), packaging fails and no executable is produced.
 
+When your app depends on `node-gui` from `node_modules`, the packer automatically excludes
+non-runtime files from that dependency (for example `deps/`, `src/`, `scripts/`, `test/`,
+`binding.gyp`, Markdown docs, `build/Release/obj`, and Windows debug artifacts like
+`*.pdb`, `*.iobj`, `*.ipdb`, `*.lib`, `*.exp`).
+
 The output is a self-extracting executable that requires Node.js on the target machine.
 
 ## Building from source
