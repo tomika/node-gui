@@ -69,6 +69,7 @@ function installToolDependencies() {
         '--no-package-lock',
         '--ignore-scripts',
         'jimp@^0.22.0',
+        '@resvg/resvg-js@^2.6.2',
     ];
 
     const result = runInstaller(args, TOOLS_DIR);
@@ -96,7 +97,7 @@ function main() {
 
         const installed = installToolDependencies();
         if (installed) {
-            log('Installed isolated icon conversion tool: jimp');
+            log('Installed isolated icon conversion tools: jimp, @resvg/resvg-js');
         }
     } catch (err) {
         warn(`Unexpected postinstall failure: ${err.message}`);

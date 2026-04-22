@@ -133,6 +133,7 @@ Supported input formats: **SVG**, **PNG**, **JPG**, **ICO** (Windows), **ICNS** 
 **Note:** Icon conversion requires either:
 - **No extra tools** for PNG → ICO conversion on Windows (built-in path)
 - **Isolated `jimp` install** (auto-installed by `node-gui` postinstall) for JPG conversion
+- **Isolated `@resvg/resvg-js` install** (auto-installed by `node-gui` postinstall) for SVG conversion
 - **ImageMagick** (optional) for additional conversion compatibility
 
 If conversion dependencies are not available, the packer will warn and proceed without an icon.
