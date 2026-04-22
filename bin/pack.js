@@ -75,6 +75,10 @@ const DEFAULT_EXCLUDES = [
     'Thumbs.db',
     '*.log',
     'npm-debug.log*',
+    // Exclude optional image conversion dependencies not needed at runtime
+    'node_modules/sharp',
+    'node_modules/jimp',
+    'node_modules/@jimp',
 ];
 
 // When node-gui is used as a dependency in another project, keep only the

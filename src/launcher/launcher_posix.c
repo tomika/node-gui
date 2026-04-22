@@ -307,8 +307,21 @@ int main(int argc, char* argv[])
         /* child: exec node */
         char* args[] = { "node", main_path_full, NULL };
         execvp("node", args);
-        fprintf(stderr, "node-gui launcher: failed to exec node: %s\n",
-                strerror(errno));
+        
+        /* exec failed – display user-friendly error message */
+        fprintf(stderr,
+            "\n"
+            "╔════════════════════════════════════════════════════════════════╗\n"
+            "║  Node.js is not installed or not available in PATH            ║\n"
+            "╚════════════════════════════════════════════════════════════════╝\n"
+            "\n"
+            "To run this application, please:\n"
+            "  1. Install Node.js from https://nodejs.org\n"
+            "  2. Ensure 'node' is available in your system PATH\n"
+            "  3. Restart this application\n"
+            "\n"
+            "Technical details: %s\n"
+            "\n", strerror(errno));
         exit(127);
     }
 
@@ -319,5 +332,20 @@ int main(int argc, char* argv[])
     /* --- cleanup --------------------------------------------------------- */
     delete_tree(extract_dir);
 
-    return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    if (WIFEXITED(status)) {
+        int exit_code = WEXITSTATUS(status);
+        // Exit code 127 indicates exec failed (usually command not found)
+        if (exit_code == 127) {
+            fprintf(stderr,
+                "\n"
+                "╔════════════════════════════════════════════════════════════════╗\n"
+                "║  Application error: Node.js could not be found                ║\n"
+                "╚════════════════════════════════════════════════════════════════╝\n"
+                "\n");
+            return 1;
+        }
+        return exit_code;
+    }
+
+    return 1;
 }

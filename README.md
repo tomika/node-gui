@@ -142,6 +142,12 @@ For best results, install ImageMagick on your system:
 
 If conversion dependencies are not available, the packer will warn and proceed without an icon.
 
+**Note:** Optional image conversion packages (`sharp`, `jimp`) are **automatically excluded** from the packaged executable – they are only needed on the build machine.
+
+### Runtime requirements
+
+The generated executable requires Node.js to be installed on the target system. If Node.js is not found, the application will display a user-friendly error message with installation instructions.
+
 If the configured main file is missing (or excluded), packaging fails and no executable is produced.
 
 When your app depends on `node-gui` from `node_modules`, the packer automatically excludes

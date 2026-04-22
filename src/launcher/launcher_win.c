@@ -324,10 +324,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev,
     if (!CreateProcessW(NULL, cmdline, NULL, NULL, FALSE,
                         create_flags, NULL, extract_dir, &si, &pi)) {
         DWORD err = GetLastError();
-        wchar_t msg[512];
-        swprintf_s(msg, 512,
-            L"Failed to start node.exe (error %lu).\n"
-            L"Make sure Node.js is installed and available in PATH.", err);
+        wchar_t msg[1024];
+        
+        // Provide more specific error messages based on error code
+        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) {
+            swprintf_s(msg, 1024,
+                L"Node.js is not installed or not available in PATH.\n\n"
+                L"To run this application, please:\n"
+                L"1. Download and install Node.js from https://nodejs.org\n"
+                L"2. Add Node.js to your PATH environment variable\n"
+                L"3. Restart this application\n\n"
+                L"Error code: %lu", err);
+        } else {
+            swprintf_s(msg, 1024,
+                L"Failed to start Node.js (error %lu).\n\n"
+                L"Please ensure Node.js is installed and available in your system PATH.\n"
+                L"You can download Node.js from https://nodejs.org", err);
+        }
         show_error(msg);
         delete_tree(extract_dir);
         return 1;
