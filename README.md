@@ -105,7 +105,7 @@ Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
       "output": "dist/myapp",
       "main": "src/index.js",
       "hideConsole": true,
-      "icon": "assets/icon.ico",
+      "icon": "assets/icon.svg",
       "exclude": ["src", "test"]
     }
   }
@@ -117,8 +117,30 @@ Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
 | `output` | package name | Output path (`.exe` added on Windows) |
 | `main` | `pkg.main` then `index.js` | Entry-point script |
 | `hideConsole` | `true` | Hide console window on Windows |
-| `icon` | none | Path to `.ico` file (Windows only) |
+| `icon` | none | Path to icon file (SVG, PNG, JPG, ICO, or ICNS). Automatically converted to platform format. |
 | `exclude` | `[]` | Extra glob patterns to exclude from the bundle |
+
+### Icon handling
+
+The `icon` parameter accepts common image formats and automatically converts them to the required format for each platform:
+
+- **Windows**: Converts to `.ico` format (256×256)
+- **macOS**: Converts to `.icns` format (512×512)
+- **Linux**: Converts to `.png` format (256×256)
+
+Supported input formats: **SVG**, **PNG**, **JPG**, **ICO** (Windows), **ICNS** (macOS)
+
+**Note:** Icon conversion requires either:
+- **ImageMagick** (`convert` command) – recommended for all platforms
+- **sharp** npm package – for PNG/JPG conversion
+- **jimp** npm package – fallback for PNG/JPG conversion
+
+For best results, install ImageMagick on your system:
+- **Ubuntu/Debian**: `sudo apt-get install imagemagick`
+- **macOS**: `brew install imagemagick`
+- **Windows**: Download from [imagemagick.org](https://imagemagick.org)
+
+If conversion dependencies are not available, the packer will warn and proceed without an icon.
 
 If the configured main file is missing (or excluded), packaging fails and no executable is produced.
 

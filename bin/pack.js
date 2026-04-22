@@ -19,7 +19,7 @@
  *         "output":       "dist/myapp",         // output path (no extension)
  *         "main":         "src/index.js",        // entry-point (falls back to pkg.main)
  *         "hideConsole":  true,                  // Windows: hide console window (default true)
- *         "icon":         "assets/icon.ico",     // Windows: path to .ico file
+ *         "icon":         "assets/icon.svg",     // path to SVG/PNG/JPG/ICO icon file
  *         "exclude":      [".git", "dist"]       // extra exclude patterns
  *       }
  *     }
@@ -49,6 +49,7 @@ const fs       = require('fs');
 const path     = require('path');
 const os       = require('os');
 const { execSync, spawnSync } = require('child_process');
+const iconConverter = require('../lib/icon-converter');
 
 /* -------------------------------------------------------------------------
  * Constants
@@ -671,10 +672,45 @@ function main() {
         warn(`Icon file not found: ${iconPath} – proceeding without icon.`);
     }
 
+    // Convert icon to platform-specific format if needed
+    let convertedIconPath = null;
+    let convertedIconTmpDir = null;
+    if (iconPath && fs.existsSync(iconPath)) {
+        const inputFormat = iconConverter.detectFormat(iconPath);
+        
+        if (inputFormat === 'unknown') {
+            warn(`Unknown icon format: ${path.extname(iconPath)} – proceeding without icon.`);
+        } else {
+            // Determine the required format for the current platform
+            const requiredFormat = process.platform === 'win32' ? 'ico' : 
+                                   process.platform === 'darwin' ? 'icns' : 'png';
+            
+            if (inputFormat !== requiredFormat) {
+                // Icon conversion needed
+                convertedIconTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ngpack-icon-'));
+                const convertedExt = requiredFormat;
+                convertedIconPath = path.join(convertedIconTmpDir, `converted_icon.${convertedExt}`);
+                
+                try {
+                    iconConverter.convertIconForPlatform(iconPath, convertedIconPath, process.platform);
+                    log(`Icon:            ${convertedIconPath} (converted from ${inputFormat.toUpperCase()})`);
+                } catch (e) {
+                    warn(`Icon conversion failed: ${e.message} – proceeding without icon.`);
+                    convertedIconPath = null;
+                    try { fs.rmSync(convertedIconTmpDir, { recursive: true, force: true }); } catch (_) {}
+                    convertedIconTmpDir = null;
+                }
+            } else {
+                // Icon is already in the correct format
+                convertedIconPath = iconPath;
+                log(`Icon:            ${convertedIconPath}`);
+            }
+        }
+    }
+
     log(`Packing project: ${projectDir}`);
     log(`Main entry:      ${mainNorm}`);
     log(`Output:          ${outputPath}`);
-    if (iconPath && fs.existsSync(iconPath)) log(`Icon:            ${iconPath}`);
     if (process.platform === 'win32') log(`Hide console:    ${hideConsole}`);
 
     /* 1. Collect project files -------------------------------------------- */
@@ -715,7 +751,7 @@ function main() {
     let stubPath, tmpDir;
     try {
         ({ stubPath, tmpDir } = compileLauncher(
-            iconPath && fs.existsSync(iconPath) ? iconPath : null,
+            convertedIconPath,
             appName,
             pkg.version
         ));
@@ -744,6 +780,11 @@ function main() {
     // Make executable on POSIX
     if (process.platform !== 'win32') {
         fs.chmodSync(outputPath, 0o755);
+    }
+
+    // Clean up converted icon directory if it was created
+    if (convertedIconTmpDir) {
+        try { fs.rmSync(convertedIconTmpDir, { recursive: true, force: true }); } catch (_) {}
     }
 
     const outSize = fs.statSync(outputPath).size;
