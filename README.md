@@ -131,18 +131,13 @@ The `icon` parameter accepts common image formats and automatically converts the
 Supported input formats: **SVG**, **PNG**, **JPG**, **ICO** (Windows), **ICNS** (macOS)
 
 **Note:** Icon conversion requires either:
-- **ImageMagick** (`convert` command) – recommended for all platforms
-- **sharp** npm package – for PNG/JPG conversion
-- **jimp** npm package – fallback for PNG/JPG conversion
-
-For best results, install ImageMagick on your system:
-- **Ubuntu/Debian**: `sudo apt-get install imagemagick`
-- **macOS**: `brew install imagemagick`
-- **Windows**: Download from [imagemagick.org](https://imagemagick.org)
+- **No extra tools** for PNG → ICO conversion on Windows (built-in path)
+- **Isolated `jimp` install** (auto-installed by `node-gui` postinstall) for JPG conversion
+- **ImageMagick** (optional) for additional conversion compatibility
 
 If conversion dependencies are not available, the packer will warn and proceed without an icon.
 
-**Note:** Optional image conversion packages (`sharp`, `jimp`) are **automatically excluded** from the packaged executable – they are only needed on the build machine.
+**Note:** `node-gui` installs icon conversion helper packages into an isolated folder (`.node-gui-tools`) and this folder is automatically excluded from packaged executables.
 
 ### Runtime requirements
 

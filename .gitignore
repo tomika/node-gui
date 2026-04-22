@@ -13,6 +13,7 @@ npm-debug.log*
 .DS_Store
 deps/
 dist/
+.node-gui-tools/
 .env
 .env.*
 .vscode/

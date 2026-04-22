@@ -70,6 +70,7 @@ const DEFAULT_EXCLUDES = [
     '.git',
     '.svn',
     '.hg',
+    '.node-gui-tools',
     'node_modules/.bin',
     '.DS_Store',
     'Thumbs.db',
@@ -85,6 +86,8 @@ const DEFAULT_EXCLUDES = [
 // minimal runtime artifacts from node_modules/node-gui.
 const NODE_GUI_RUNTIME_KEEP_RULES = [
     'node_modules/node-gui/*',
+    'node_modules/node-gui/.node-gui-tools',
+    'node_modules/node-gui/node_modules',
     '!node_modules/node-gui/index.js',
     '!node_modules/node-gui/package.json',
     '!node_modules/node-gui/build',
@@ -638,7 +641,7 @@ function die(msg)  { process.stderr.write(`[node-gui-pack] ERROR: ${msg}\n`); pr
 /* -------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------*/
-function main() {
+async function main() {
     let cli;
     try {
         cli = parseArgs(process.argv.slice(2));
@@ -696,7 +699,7 @@ function main() {
                 convertedIconPath = path.join(convertedIconTmpDir, `converted_icon.${convertedExt}`);
                 
                 try {
-                    iconConverter.convertIconForPlatform(iconPath, convertedIconPath, process.platform);
+                    await iconConverter.convertIconForPlatform(iconPath, convertedIconPath, process.platform);
                     log(`Icon:            ${convertedIconPath} (converted from ${inputFormat.toUpperCase()})`);
                 } catch (e) {
                     warn(`Icon conversion failed: ${e.message} – proceeding without icon.`);
@@ -795,4 +798,6 @@ function main() {
     log(`Done!  ${outputPath}  (${(outSize / 1024 / 1024).toFixed(1)} MB)`);
 }
 
-main();
+main().catch((e) => {
+    die(e && e.message ? e.message : String(e));
+});
