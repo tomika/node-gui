@@ -9,6 +9,7 @@
 #include <thread>
 #include <atomic>
 #include <string>
+#include <cstdlib>
 
 // ---------------------------------------------------------------------------
 // Handle – stores references to the native window and thread state
@@ -73,6 +74,16 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
         h->window = window;
         [window setTitle:@"node-gui"];
         [window center];
+
+                const char* iconPath = std::getenv("NODE_GUI_WINDOW_ICON");
+                if (iconPath && *iconPath) {
+                        NSString* iconPathStr = [NSString stringWithUTF8String:iconPath];
+                        NSImage* appIcon = [[NSImage alloc] initWithContentsOfFile:iconPathStr];
+                        if (appIcon) {
+                                [NSApp setApplicationIconImage:appIcon];
+                                [window setMiniwindowImage:appIcon];
+                        }
+                }
 
         // Delegate for close detection
         NodeGuiWindowDelegate* delegate = [[NodeGuiWindowDelegate alloc] init];

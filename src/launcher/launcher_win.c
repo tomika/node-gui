@@ -53,6 +53,8 @@
 #define MAIN_PATH_MAX  128
 #define FOOTER_SIZE    (4 + 4 + 8 + MAIN_PATH_MAX + MAGIC_LEN)  /* 152 */
 #define FLAG_HIDE_CONSOLE 0x01
+#define NODE_GUI_WINDOW_ICON_ENV L"NODE_GUI_WINDOW_ICON"
+#define PACKED_WINDOW_ICON_REL   L"__node_gui\\window_icon.ico"
 
 #pragma pack(push, 1)
 typedef struct {
@@ -311,6 +313,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrev,
 
     swprintf_s(cmdline, 32768, L"node \"%s\\%s\"", extract_dir, main_wide);
     free(main_wide);
+
+    /* Provide packed window icon path to the child process (if present). */
+    {
+        wchar_t packed_icon_path[MAX_PATH];
+        swprintf_s(packed_icon_path, MAX_PATH, L"%s\\%s", extract_dir, PACKED_WINDOW_ICON_REL);
+        if (GetFileAttributesW(packed_icon_path) != INVALID_FILE_ATTRIBUTES) {
+            SetEnvironmentVariableW(NODE_GUI_WINDOW_ICON_ENV, packed_icon_path);
+        }
+    }
 
     /* --- spawn node ------------------------------------------------------- */
     ZeroMemory(&si, sizeof(si));

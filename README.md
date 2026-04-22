@@ -124,9 +124,9 @@ Configuration is read from `package.json` under `"node-gui"` → `"pack"`:
 
 The `icon` parameter accepts common image formats and automatically converts them to the required format for each platform:
 
-- **Windows**: Converts to `.ico` format (256×256)
-- **macOS**: Converts to `.icns` format (512×512)
-- **Linux**: Converts to `.png` format (256×256)
+- **Windows**: Converts to `.ico` format (256×256) and applies it to the packaged app window icon
+- **macOS**: Converts to `.icns` format (512×512) and applies it as packaged app icon
+- **Linux**: Converts to `.png` format (256×256) and applies it to the packaged app window icon
 
 Supported input formats: **SVG**, **PNG**, **JPG**, **ICO** (Windows), **ICNS** (macOS)
 

@@ -58,6 +58,11 @@ const MAGIC           = 'NGPACK01';
 const MAIN_PATH_MAX   = 128;
 const FOOTER_SIZE     = 4 + 4 + 8 + MAIN_PATH_MAX + 8; // 152
 const FLAG_HIDE_CONSOLE = 0x01;
+const PACKED_WINDOW_ICON_REL = {
+    win32: '__node_gui/window_icon.ico',
+    darwin: '__node_gui/window_icon.icns',
+    linux: '__node_gui/window_icon.png',
+};
 
 /* Paths inside the node-gui package itself */
 const PKG_DIR         = path.join(__dirname, '..');
@@ -682,6 +687,7 @@ async function main() {
     // Convert icon to platform-specific format if needed
     let convertedIconPath = null;
     let convertedIconTmpDir = null;
+    let packedWindowIconRelPath = null;
     if (iconPath && fs.existsSync(iconPath)) {
         const inputFormat = iconConverter.detectFormat(iconPath);
         
@@ -691,6 +697,7 @@ async function main() {
             // Determine the required format for the current platform
             const requiredFormat = process.platform === 'win32' ? 'ico' : 
                                    process.platform === 'darwin' ? 'icns' : 'png';
+            packedWindowIconRelPath = PACKED_WINDOW_ICON_REL[process.platform] || null;
             
             if (inputFormat !== requiredFormat) {
                 // Icon conversion needed
@@ -733,6 +740,16 @@ async function main() {
 
     log('Collecting project files…');
     const files = collectFiles(projectDir, excludePatterns);
+
+    // Include configured icon in the archive so runtime windows can use the
+    // same icon across supported platforms.
+    if (packedWindowIconRelPath && convertedIconPath && fs.existsSync(convertedIconPath)) {
+        files.push({
+            fullPath: convertedIconPath,
+            relPath: packedWindowIconRelPath,
+        });
+    }
+
     log(`  ${files.length} files collected.`);
 
     if (files.length === 0) {

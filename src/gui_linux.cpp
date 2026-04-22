@@ -6,6 +6,7 @@
 #include <string>
 #include <atomic>
 #include <mutex>
+#include <cstdlib>
 
 struct GuiHandle {
     GtkWidget*              window;
@@ -38,6 +39,11 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     gtk_window_set_title(GTK_WINDOW(window), "node-gui");
     gtk_window_set_default_size(GTK_WINDOW(window), opts.width, opts.height);
     gtk_window_set_position(GTK_WINDOW(window), GTK_WIN_POS_CENTER);
+
+    const char* iconPath = std::getenv("NODE_GUI_WINDOW_ICON");
+    if (iconPath && *iconPath) {
+        gtk_window_set_icon_from_file(GTK_WINDOW(window), iconPath, nullptr);
+    }
 
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), h);
 

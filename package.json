@@ -1,6 +1,6 @@
 {
   "name": "node-gui",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Native GUI window with embedded browser control for Node.js applications. Opens a webview pointing to a local port so Node apps can include a GUI without requiring users to open a browser manually.",
   "main": "index.js",
   "types": "index.d.ts",

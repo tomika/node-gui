@@ -56,6 +56,12 @@
 #define MAGIC_LEN     8
 #define MAIN_PATH_MAX 128
 #define FOOTER_SIZE   (4 + 4 + 8 + MAIN_PATH_MAX + MAGIC_LEN)  /* 152 */
+#define NODE_GUI_WINDOW_ICON_ENV "NODE_GUI_WINDOW_ICON"
+#if defined(__APPLE__)
+#  define PACKED_WINDOW_ICON_REL "__node_gui/window_icon.icns"
+#else
+#  define PACKED_WINDOW_ICON_REL "__node_gui/window_icon.png"
+#endif
 
 /* LE uint32 / uint64 readers (portable, avoids alignment issues) */
 static uint32_t read_u32le(const unsigned char* p)
@@ -227,6 +233,7 @@ int main(int argc, char* argv[])
     PackFooter footer;
     char      extract_dir[PATH_MAX];
     char      main_path_full[PATH_MAX];
+    char      icon_path_full[PATH_MAX];
     pid_t     pid;
     int       status = 0;
 
@@ -295,6 +302,11 @@ int main(int argc, char* argv[])
     /* --- spawn node ------------------------------------------------------- */
     snprintf(main_path_full, sizeof(main_path_full), "%s/%s",
              extract_dir, footer.main_path);
+    snprintf(icon_path_full, sizeof(icon_path_full), "%s/%s",
+             extract_dir, PACKED_WINDOW_ICON_REL);
+    if (access(icon_path_full, F_OK) == 0) {
+        setenv(NODE_GUI_WINDOW_ICON_ENV, icon_path_full, 1);
+    }
 
     pid = fork();
     if (pid < 0) {

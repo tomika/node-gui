@@ -39,6 +39,24 @@ struct GuiHandle {
 // Window class name
 // ---------------------------------------------------------------------------
 static const wchar_t* const kClassName = L"NodeGuiWindow";
+static const wchar_t* const kWindowIconEnv = L"NODE_GUI_WINDOW_ICON";
+
+static HICON load_window_icon_from_env(int cx, int cy) {
+    wchar_t iconPath[MAX_PATH] = {0};
+    DWORD len = GetEnvironmentVariableW(kWindowIconEnv, iconPath, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        return nullptr;
+    }
+
+    return static_cast<HICON>(LoadImageW(
+        nullptr,
+        iconPath,
+        IMAGE_ICON,
+        cx,
+        cy,
+        LR_LOADFROMFILE
+    ));
+}
 
 // ---------------------------------------------------------------------------
 // Window procedure
@@ -89,6 +107,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     HINSTANCE hInst = GetModuleHandle(nullptr);
 
+    static HICON classIconLarge = nullptr;
+    static HICON classIconSmall = nullptr;
+    if (!classIconLarge) {
+        classIconLarge = load_window_icon_from_env(
+            GetSystemMetrics(SM_CXICON),
+            GetSystemMetrics(SM_CYICON)
+        );
+    }
+    if (!classIconSmall) {
+        classIconSmall = load_window_icon_from_env(
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON)
+        );
+    }
+
     // Register window class (once per process)
     static ATOM classAtom = 0;
     if (!classAtom) {
@@ -99,6 +132,8 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
         wc.lpszClassName  = kClassName;
         wc.hCursor        = LoadCursor(nullptr, IDC_ARROW);
         wc.hbrBackground  = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.hIcon          = classIconLarge;
+        wc.hIconSm        = classIconSmall;
         classAtom = RegisterClassExW(&wc);
     }
 
@@ -113,6 +148,14 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     h->hwnd     = hwnd;
     h->threadId = GetCurrentThreadId();
     SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(h));
+
+    // Ensure icon is applied even if class icon is unavailable/unchanged.
+    if (classIconLarge) {
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(classIconLarge));
+    }
+    if (classIconSmall) {
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(classIconSmall));
+    }
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
