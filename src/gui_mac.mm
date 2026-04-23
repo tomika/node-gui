@@ -17,6 +17,7 @@
 struct GuiHandle {
     NSWindow* __strong          window;
     std::function<void()>       onClosed;
+    std::function<void(int, int)> onContentSize;
     std::thread                 uiThread;
     std::atomic<bool>           closed{false};
 };
@@ -25,6 +26,10 @@ struct GuiHandle {
 // WindowDelegate – detects when the user closes the window
 // ---------------------------------------------------------------------------
 @interface NodeGuiWindowDelegate : NSObject <NSWindowDelegate>
+@property (nonatomic, assign) GuiHandle* handle;
+@end
+
+@interface NodeGuiContentSizeHandler : NSObject <WKScriptMessageHandler>
 @property (nonatomic, assign) GuiHandle* handle;
 @end
 
@@ -48,6 +53,25 @@ struct GuiHandle {
                                            data1:0
                                            data2:0];
     [NSApp postEvent:event atStart:YES];
+}
+@end
+
+@implementation NodeGuiContentSizeHandler
+- (void)userContentController:(WKUserContentController *)userContentController
+            didReceiveScriptMessage:(WKScriptMessage *)message {
+        (void)userContentController;
+        if (![message.body isKindOfClass:[NSString class]]) return;
+        GuiHandle* h = self.handle;
+        if (!h || !h->onContentSize) return;
+
+        NSString* msg = (NSString*)message.body;
+        if (![msg hasPrefix:@"NGSIZE:"]) return;
+        NSString* rest = [msg substringFromIndex:7];
+        NSArray<NSString*>* parts = [rest componentsSeparatedByString:@"x"];
+        if (parts.count != 2) return;
+        int w = [parts[0] intValue];
+        int ht = [parts[1] intValue];
+        h->onContentSize(w, ht);
 }
 @end
 
@@ -92,6 +116,29 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 
         // Create WKWebView
         WKWebViewConfiguration* config = [[WKWebViewConfiguration alloc] init];
+        WKUserContentController* contentController = [[WKUserContentController alloc] init];
+        NodeGuiContentSizeHandler* sizeHandler = [[NodeGuiContentSizeHandler alloc] init];
+        sizeHandler.handle = h;
+        [contentController addScriptMessageHandler:sizeHandler name:@"nodegui"];
+
+        NSString* sizeScriptSrc =
+            @"(() => {"
+             "  const post = () => {"
+             "    const de = document.documentElement;"
+             "    const body = document.body;"
+             "    const w = Math.max((de && de.scrollWidth) || 0, (body && body.scrollWidth) || 0);"
+             "    const h = Math.max((de && de.scrollHeight) || 0, (body && body.scrollHeight) || 0);"
+             "    window.webkit.messageHandlers.nodegui.postMessage(`NGSIZE:${w}x${h}`);"
+             "  };"
+             "  new ResizeObserver(post).observe(document.documentElement);"
+             "  window.addEventListener('load', post);"
+             "  post();"
+             "})();";
+        WKUserScript* sizeScript = [[WKUserScript alloc] initWithSource:sizeScriptSrc
+                                                           injectionTime:WKUserScriptInjectionTimeAtDocumentEnd
+                                                        forMainFrameOnly:NO];
+        [contentController addUserScript:sizeScript];
+        config.userContentController = contentController;
         WKWebView* webview = [[WKWebView alloc] initWithFrame:frame configuration:config];
         [window setContentView:webview];
 
@@ -114,9 +161,11 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 // Public API
 // ---------------------------------------------------------------------------
 
-void* gui_open(const GuiOptions& opts, std::function<void()> onClosed) {
+void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
+               std::function<void(int, int)> onContentSize) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
+    h->onContentSize = std::move(onContentSize);
 
     h->uiThread = std::thread(gui_thread_func, opts, h);
     h->uiThread.detach();
@@ -133,4 +182,45 @@ void gui_close(void* handle) {
             [h->window close];
         });
     }
+}
+
+void gui_move(void* handle, int left, int top) {
+    if (!handle) return;
+    auto* h = static_cast<GuiHandle*>(handle);
+    if (h->window) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [h->window setFrameTopLeftPoint:NSMakePoint(left, top)];
+        });
+    }
+}
+
+void gui_resize(void* handle, int innerWidth, int innerHeight) {
+    if (!handle) return;
+    auto* h = static_cast<GuiHandle*>(handle);
+    if (h->window) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSSize contentSize = NSMakeSize(innerWidth > 1 ? innerWidth : 1,
+                                            innerHeight > 1 ? innerHeight : 1);
+            [h->window setContentSize:contentSize];
+        });
+    }
+}
+
+GuiDisplayArea gui_display_area() {
+    GuiDisplayArea area{0, 0, 0, 0};
+    @autoreleasepool {
+        NSScreen* screen = [NSScreen mainScreen];
+        if (!screen) {
+            NSArray<NSScreen*>* screens = [NSScreen screens];
+            if (screens.count > 0) screen = screens[0];
+        }
+        if (screen) {
+            NSRect visible = [screen visibleFrame];
+            area.left = (int)visible.origin.x;
+            area.top = (int)(visible.origin.y + visible.size.height);
+            area.width = (int)visible.size.width;
+            area.height = (int)visible.size.height;
+        }
+    }
+    return area;
 }

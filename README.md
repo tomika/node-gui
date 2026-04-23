@@ -61,7 +61,7 @@ Calling `window.close()` in JavaScript closes the native window.
 
 ## API
 
-### `gui.open(options)` → `{ close() }`
+### `gui.open(options)` → `GuiHandle`
 
 Opens a native window with an embedded browser navigating to
 `http://localhost:<port>`.
@@ -72,9 +72,17 @@ Opens a native window with an embedded browser navigating to
 | `height` | `number` | yes | Initial window height in pixels |
 | `port` | `number` | yes | Localhost port to connect to (1–65535) |
 | `onClose` | `function` | no | Called when the window is closed |
+| `onContentSize` | `function` | no | Called with web content size: `(width, height)` |
 
-Returns an object with a **`close()`** method that requests the native window
-to close. It is safe to call `close()` more than once.
+Returns a `GuiHandle` with these methods:
+
+- `close()` – Requests the native window to close. Safe to call more than once.
+- `move(left, top)` – Moves the native window to screen coordinates.
+- `resize(innerWidth, innerHeight)` – Resizes the native window so the inner web content area matches the requested size.
+
+Static `GuiHandle` API:
+
+- `gui.GuiHandle.displayArea()` – Returns `{ left, top, width, height }` of the primary display work area.
 
 ## Standalone packaging
 

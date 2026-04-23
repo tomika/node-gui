@@ -10,6 +10,9 @@ public:
     static Napi::Object Init(Napi::Env env, Napi::Object exports) {
         Napi::Function func = DefineClass(env, "GuiWindow", {
             InstanceMethod("close", &GuiWindow::Close),
+            InstanceMethod("move", &GuiWindow::Move),
+            InstanceMethod("resize", &GuiWindow::Resize),
+            StaticMethod("displayArea", &GuiWindow::DisplayArea),
         });
 
         Napi::FunctionReference* ctor = new Napi::FunctionReference();
@@ -64,6 +67,19 @@ public:
             hasOnClose_ = true;
         }
 
+        if (opts.Has("onContentSize") && opts.Get("onContentSize").IsFunction()) {
+            onContentSizeRef_ = Napi::Persistent(opts.Get("onContentSize").As<Napi::Function>());
+            onContentSizeRef_.SuppressDestruct();
+            hasOnContentSize_ = true;
+            contentSizeTsfn_ = Napi::ThreadSafeFunction::New(
+                env,
+                onContentSizeRef_.Value(),
+                "GuiOnContentSize",
+                0,
+                1
+            );
+        }
+
         // Create a persistent reference so this instance is stored for the callback
         closeTsfn_ = Napi::ThreadSafeFunction::New(
             env,
@@ -78,6 +94,10 @@ public:
             // Called from the GUI thread when the window is closed
             std::lock_guard<std::mutex> lock(mutex_);
             handle_ = nullptr;
+            if (contentSizeTsfn_) {
+                contentSizeTsfn_.Release();
+                contentSizeTsfn_ = nullptr;
+            }
             if (closeTsfn_) {
                 // Call the onClose JS function on the main thread
                 closeTsfn_.BlockingCall();
@@ -87,6 +107,30 @@ public:
             if (tsfn_) {
                 tsfn_.Release();
                 tsfn_ = nullptr;
+            }
+        }, [this](int width, int height) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!contentSizeTsfn_) return;
+
+            struct ContentSizeData {
+                int width;
+                int height;
+            };
+
+            auto* payload = new ContentSizeData{width, height};
+            auto status = contentSizeTsfn_.NonBlockingCall(
+                payload,
+                [](Napi::Env env, Napi::Function jsCb, ContentSizeData* data) {
+                    jsCb.Call({
+                        Napi::Number::New(env, data->width),
+                        Napi::Number::New(env, data->height),
+                    });
+                    delete data;
+                }
+            );
+
+            if (status != napi_ok) {
+                delete payload;
             }
         });
     }
@@ -100,13 +144,59 @@ public:
         return info.Env().Undefined();
     }
 
+    Napi::Value Move(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+            Napi::TypeError::New(env, "Expected move(left, top)").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        const int left = info[0].As<Napi::Number>().Int32Value();
+        const int top = info[1].As<Napi::Number>().Int32Value();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (handle_) {
+            gui_move(handle_, left, top);
+        }
+        return env.Undefined();
+    }
+
+    Napi::Value Resize(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+            Napi::TypeError::New(env, "Expected resize(innerWidth, innerHeight)").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+
+        const int innerWidth = info[0].As<Napi::Number>().Int32Value();
+        const int innerHeight = info[1].As<Napi::Number>().Int32Value();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (handle_) {
+            gui_resize(handle_, innerWidth, innerHeight);
+        }
+        return env.Undefined();
+    }
+
+    static Napi::Value DisplayArea(const Napi::CallbackInfo& info) {
+        Napi::Env env = info.Env();
+        GuiDisplayArea area = gui_display_area();
+        Napi::Object out = Napi::Object::New(env);
+        out.Set("left", Napi::Number::New(env, area.left));
+        out.Set("top", Napi::Number::New(env, area.top));
+        out.Set("width", Napi::Number::New(env, area.width));
+        out.Set("height", Napi::Number::New(env, area.height));
+        return out;
+    }
+
 private:
     void*                         handle_;
     std::mutex                    mutex_;
     Napi::ThreadSafeFunction      tsfn_;
     Napi::ThreadSafeFunction      closeTsfn_;
+    Napi::ThreadSafeFunction      contentSizeTsfn_;
     Napi::FunctionReference       onCloseRef_;
+    Napi::FunctionReference       onContentSizeRef_;
     bool                          hasOnClose_ = false;
+    bool                          hasOnContentSize_ = false;
 };
 
 // ---------------------------------------------------------------------------

@@ -7,11 +7,28 @@ export interface GuiOptions {
   port: number;
   /** Callback invoked when the window is closed. */
   onClose?: () => void;
+  /** Callback invoked with document content size in pixels. */
+  onContentSize?: (width: number, height: number) => void;
 }
 
 export interface GuiHandle {
   /** Close the native window. Safe to call multiple times. */
   close(): void;
+  /** Move window to screen coordinates. */
+  move(left: number, top: number): void;
+  /** Resize window by desired inner content dimensions. */
+  resize(innerWidth: number, innerHeight: number): void;
+}
+
+export interface DisplayArea {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface GuiHandleStatic {
+  displayArea(): DisplayArea;
 }
 
 /**
@@ -19,3 +36,5 @@ export interface GuiHandle {
  * `http://localhost:<port>`.
  */
 export function open(options: GuiOptions): GuiHandle;
+
+export const GuiHandle: GuiHandleStatic;

@@ -21,7 +21,10 @@ const { GuiWindow } = binding;
  * @param {number}  options.port     - Port number on localhost to navigate to.
  * @param {function} [options.onClose] - Callback invoked when the window is
  *                                       closed (by the user or via close()).
- * @returns {{ close: function }} A handle with a close() method.
+ * @param {function} [options.onContentSize] - Callback invoked when web content
+ *                                            size changes: (width, height).
+ * @returns {{ close: function, move: function, resize: function }}
+ *          A handle with close/move/resize methods.
  */
 function open(options) {
   if (!options || typeof options !== 'object') {
@@ -36,6 +39,9 @@ function open(options) {
   if (typeof options.port !== 'number' || options.port <= 0 || options.port > 65535) {
     throw new TypeError('options.port must be a number between 1 and 65535');
   }
+  if (options.onContentSize !== undefined && typeof options.onContentSize !== 'function') {
+    throw new TypeError('options.onContentSize must be a function when provided');
+  }
 
   const win = new GuiWindow(options);
 
@@ -46,7 +52,28 @@ function open(options) {
     close() {
       win.close();
     },
+    /**
+     * Move the native window to screen coordinates.
+     */
+    move(left, top) {
+      win.move(left, top);
+    },
+    /**
+     * Resize the native window so inner content area is fully visible.
+     */
+    resize(innerWidth, innerHeight) {
+      win.resize(innerWidth, innerHeight);
+    },
   };
 }
 
-module.exports = { open };
+const GuiHandle = {
+  /**
+   * Get the primary display work area.
+   */
+  displayArea() {
+    return GuiWindow.displayArea();
+  },
+};
+
+module.exports = { open, GuiHandle };
