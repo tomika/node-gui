@@ -19,6 +19,8 @@
 #include <atomic>
 #include <functional>
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 
 // WebView2 headers (from the Microsoft.Web.WebView2 NuGet package)
 #include "WebView2.h"
@@ -28,13 +30,22 @@ using namespace Microsoft::WRL;
 // ---------------------------------------------------------------------------
 // Handle
 // ---------------------------------------------------------------------------
+static int64_t nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 struct GuiHandle {
     HWND                    hwnd   = nullptr;
     DWORD                   threadId = 0;
     std::function<void()>   onClosed;
-    std::function<void(int, int)> onContentSize;
+    std::function<void(int, int)> onContentSizeChanged;
     std::thread             uiThread;
     std::atomic<bool>       closed{false};
+    bool                    userResizing{false};
+    int64_t                 lastResizeMs{-1000000};
+    int                     lastContentWidth{-1};
+    int                     lastContentHeight{-1};
 };
 
 // ---------------------------------------------------------------------------
@@ -79,6 +90,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     auto* h = reinterpret_cast<GuiHandle*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
 
     switch (msg) {
+    case WM_ENTERSIZEMOVE:
+        if (h) { h->userResizing = true; h->lastResizeMs = nowMs(); }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
+    case WM_EXITSIZEMOVE:
+        if (h) { h->userResizing = false; h->lastResizeMs = nowMs(); }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_SIZE: {
         // Resize the webview controller to match the window
         auto* ctrl = reinterpret_cast<ICoreWebView2Controller*>(
@@ -88,6 +105,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             GetClientRect(hwnd, &bounds);
             ctrl->put_Bounds(bounds);
         }
+        // Keep suppression timer rolling during user drag
+        if (h && h->userResizing) h->lastResizeMs = nowMs();
         return 0;
     }
     case WM_CLOSE:
@@ -113,6 +132,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             AdjustWindowRectEx(&rc, style, FALSE, exStyle);
             int outerW = rc.right - rc.left;
             int outerH = rc.bottom - rc.top;
+            // Record programmatic resize time before SetWindowPos (which triggers WM_SIZE)
+            if (h) h->lastResizeMs = nowMs();
             SetWindowPos(hwnd, nullptr, 0, 0, outerW, outerH,
                          SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
             delete req;
@@ -225,7 +246,69 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
                             ComPtr<ICoreWebView2> webview;
                             controller->get_CoreWebView2(&webview);
 
-                            // Convert URL to wide string (explicit length, no null terminator)
+                            // Register message handler BEFORE Navigate so no messages are missed
+                            EventRegistrationToken msgToken;
+                            webview->add_WebMessageReceived(
+                                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                                    [h](ICoreWebView2* /*sender*/, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                        if (!h || !h->onContentSizeChanged) return S_OK;
+                                        // Suppress within 300 ms of any resize
+                                        if (nowMs() - h->lastResizeMs < 300) return S_OK;
+                                        LPWSTR msg = nullptr;
+                                        if (FAILED(args->TryGetWebMessageAsString(&msg)) || !msg) return S_OK;
+                                        int w = 0, ht = 0;
+                                        if (swscanf_s(msg, L"NGSIZE:%dx%d", &w, &ht) == 2) {
+                                            // Only fire when size actually changed
+                                            if (w != h->lastContentWidth || ht != h->lastContentHeight) {
+                                                h->lastContentWidth = w;
+                                                h->lastContentHeight = ht;
+                                                h->onContentSizeChanged(w, ht);
+                                            }
+                                        }
+                                        CoTaskMemFree(msg);
+                                        return S_OK;
+                                    }).Get(),
+                                &msgToken);
+
+                            // After each navigation completes, inject the size-observer script
+                            EventRegistrationToken navToken;
+                            webview->add_NavigationCompleted(
+                                Callback<ICoreWebView2NavigationCompletedEventHandler>(
+                                    [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* /*args*/) -> HRESULT {
+                                        static const wchar_t* const sizeScript = LR"JS(
+                                            (() => {
+                                                const post = () => {
+                                                    const de = document.documentElement;
+                                                    const body = document.body;
+                                                    const w = Math.max(
+                                                        de ? de.scrollWidth : 0,
+                                                        de ? de.offsetWidth : 0,
+                                                        body ? body.scrollWidth : 0,
+                                                        body ? body.offsetWidth : 0
+                                                    );
+                                                    const h = Math.max(
+                                                        de ? de.scrollHeight : 0,
+                                                        de ? de.offsetHeight : 0,
+                                                        body ? body.scrollHeight : 0,
+                                                        body ? body.offsetHeight : 0
+                                                    );
+                                                    if (window.chrome && window.chrome.webview) {
+                                                        window.chrome.webview.postMessage(`NGSIZE:${w}x${h}`);
+                                                    }
+                                                };
+                                                if (!window.__ngSizeObs) {
+                                                    window.__ngSizeObs = new ResizeObserver(post);
+                                                    window.__ngSizeObs.observe(document.documentElement);
+                                                }
+                                                post();
+                                            })();
+                                        )JS";
+                                        sender->ExecuteScript(sizeScript, nullptr);
+                                        return S_OK;
+                                    }).Get(),
+                                &navToken);
+
+                            // Convert URL to wide string
                             int urlWLen = MultiByteToWideChar(CP_UTF8, 0, url.data(),
                                                               (int)url.size(), nullptr, 0);
                             std::wstring wUrl(urlWLen, L'\0');
@@ -235,62 +318,15 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
                             webview->Navigate(wUrl.c_str());
                             controller->put_IsVisible(TRUE);
 
-                                                        // Handle window.close() from JavaScript
-                            EventRegistrationToken token;
+                            // Handle window.close() from JavaScript
+                            EventRegistrationToken closeToken;
                             webview->add_WindowCloseRequested(
                                 Callback<ICoreWebView2WindowCloseRequestedEventHandler>(
                                     [hwnd](ICoreWebView2* /*sender*/, IUnknown* /*args*/) -> HRESULT {
                                         PostMessage(hwnd, WM_CLOSE, 0, 0);
                                         return S_OK;
                                     }).Get(),
-                                &token);
-
-                                                        // Report content size changes to native callback.
-                                                        const wchar_t* sizeScript = LR"JS(
-                                                                (() => {
-                                                                    const post = () => {
-                                                                        const de = document.documentElement;
-                                                                        const body = document.body;
-                                                                        const w = Math.max(
-                                                                            de ? de.scrollWidth : 0,
-                                                                            de ? de.offsetWidth : 0,
-                                                                            body ? body.scrollWidth : 0,
-                                                                            body ? body.offsetWidth : 0
-                                                                        );
-                                                                        const h = Math.max(
-                                                                            de ? de.scrollHeight : 0,
-                                                                            de ? de.offsetHeight : 0,
-                                                                            body ? body.scrollHeight : 0,
-                                                                            body ? body.offsetHeight : 0
-                                                                        );
-                                                                        if (window.chrome && window.chrome.webview) {
-                                                                            window.chrome.webview.postMessage(`NGSIZE:${w}x${h}`);
-                                                                        }
-                                                                    };
-                                                                    new ResizeObserver(post).observe(document.documentElement);
-                                                                    window.addEventListener('load', post);
-                                                                    post();
-                                                                })();
-                                                        )JS";
-                                                        webview->AddScriptToExecuteOnDocumentCreated(sizeScript, nullptr);
-
-                                                        EventRegistrationToken msgToken;
-                                                        webview->add_WebMessageReceived(
-                                                                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-                                                                        [h](ICoreWebView2* /*sender*/, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-                                                                                if (!h || !h->onContentSize) return S_OK;
-                                                                                LPWSTR msg = nullptr;
-                                                                                if (FAILED(args->TryGetWebMessageAsString(&msg)) || !msg) {
-                                                                                        return S_OK;
-                                                                                }
-                                                                                int w = 0, ht = 0;
-                                                                                if (swscanf_s(msg, L"NGSIZE:%dx%d", &w, &ht) == 2) {
-                                                                                        h->onContentSize(w, ht);
-                                                                                }
-                                                                                CoTaskMemFree(msg);
-                                                                                return S_OK;
-                                                                        }).Get(),
-                                                                &msgToken);
+                                &closeToken);
 
                             // Sync window title with HTML <title>
                             EventRegistrationToken titleToken;
@@ -324,10 +360,10 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 // ---------------------------------------------------------------------------
 
 void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
-               std::function<void(int, int)> onContentSize) {
+               std::function<void(int, int)> onContentSizeChanged) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
-    h->onContentSize = std::move(onContentSize);
+    h->onContentSizeChanged = std::move(onContentSizeChanged);
 
     h->uiThread = std::thread(gui_thread_func, opts, h);
     h->uiThread.detach();

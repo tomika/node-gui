@@ -10,16 +10,26 @@
 #include <atomic>
 #include <string>
 #include <cstdlib>
+#include <chrono>
+#include <cstdint>
 
 // ---------------------------------------------------------------------------
 // Handle – stores references to the native window and thread state
 // ---------------------------------------------------------------------------
+static int64_t nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
 struct GuiHandle {
     NSWindow* __strong          window;
     std::function<void()>       onClosed;
-    std::function<void(int, int)> onContentSize;
+    std::function<void(int, int)> onContentSizeChanged;
     std::thread                 uiThread;
     std::atomic<bool>           closed{false};
+    int64_t                     lastResizeMs{-1000000};
+    int                         lastContentWidth{-1};
+    int                         lastContentHeight{-1};
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +44,10 @@ struct GuiHandle {
 @end
 
 @implementation NodeGuiWindowDelegate
+- (void)windowDidResize:(NSNotification*)notification {
+    GuiHandle* h = self.handle;
+    if (h) h->lastResizeMs = nowMs();
+}
 - (void)windowWillClose:(NSNotification*)notification {
     GuiHandle* h = self.handle;
     if (h && !h->closed.exchange(true)) {
@@ -62,7 +76,9 @@ struct GuiHandle {
         (void)userContentController;
         if (![message.body isKindOfClass:[NSString class]]) return;
         GuiHandle* h = self.handle;
-        if (!h || !h->onContentSize) return;
+        if (!h || !h->onContentSizeChanged) return;
+        // Suppress within 300 ms of any resize
+        if (nowMs() - h->lastResizeMs < 300) return;
 
         NSString* msg = (NSString*)message.body;
         if (![msg hasPrefix:@"NGSIZE:"]) return;
@@ -71,7 +87,12 @@ struct GuiHandle {
         if (parts.count != 2) return;
         int w = [parts[0] intValue];
         int ht = [parts[1] intValue];
-        h->onContentSize(w, ht);
+        // Only fire when size actually changed
+        if (w != h->lastContentWidth || ht != h->lastContentHeight) {
+            h->lastContentWidth = w;
+            h->lastContentHeight = ht;
+            h->onContentSizeChanged(w, ht);
+        }
 }
 @end
 
@@ -162,10 +183,10 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 // ---------------------------------------------------------------------------
 
 void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
-               std::function<void(int, int)> onContentSize) {
+               std::function<void(int, int)> onContentSizeChanged) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
-    h->onContentSize = std::move(onContentSize);
+    h->onContentSizeChanged = std::move(onContentSizeChanged);
 
     h->uiThread = std::thread(gui_thread_func, opts, h);
     h->uiThread.detach();
@@ -199,6 +220,7 @@ void gui_resize(void* handle, int innerWidth, int innerHeight) {
     auto* h = static_cast<GuiHandle*>(handle);
     if (h->window) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            h->lastResizeMs = nowMs();
             NSSize contentSize = NSMakeSize(innerWidth > 1 ? innerWidth : 1,
                                             innerHeight > 1 ? innerHeight : 1);
             [h->window setContentSize:contentSize];

@@ -26,7 +26,7 @@ struct GuiDisplayArea {
 void* gui_open(
     const GuiOptions& opts,
     std::function<void()> onClosed,
-    std::function<void(int, int)> onContentSize
+    std::function<void(int, int)> onContentSizeChanged
 );
 
 // Requests the window identified by handle to close. Thread-safe.

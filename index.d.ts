@@ -8,7 +8,7 @@ export interface GuiOptions {
   /** Callback invoked when the window is closed. */
   onClose?: () => void;
   /** Callback invoked with document content size in pixels. */
-  onContentSize?: (width: number, height: number) => void;
+  onContentSizeChanged?: (width: number, height: number) => void;
 }
 
 export interface GuiHandle {

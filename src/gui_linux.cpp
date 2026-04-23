@@ -7,6 +7,8 @@
 #include <atomic>
 #include <mutex>
 #include <cstdlib>
+#include <chrono>
+#include <cstdint>
 
 struct WindowSizeData {
     int width;
@@ -16,16 +18,32 @@ struct WindowSizeData {
 struct GuiHandle {
     GtkWidget*              window;
     std::function<void()>   onClosed;
-    std::function<void(int, int)> onContentSize;
+    std::function<void(int, int)> onContentSizeChanged;
     std::thread             uiThread;
     std::atomic<bool>       closed{false};
+    int64_t                 lastResizeMs{-1000000};
+    int                     lastContentWidth{-1};
+    int                     lastContentHeight{-1};
 };
+
+static int64_t nowMs() {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+static gboolean on_configure_event(GtkWidget* /*widget*/, GdkEventConfigure* /*event*/, gpointer data) {
+    auto* h = static_cast<GuiHandle*>(data);
+    if (h) h->lastResizeMs = nowMs();
+    return FALSE;
+}
 
 static void on_script_message(WebKitUserContentManager* /*manager*/,
                               WebKitJavascriptResult* js_result,
                               gpointer user_data) {
     auto* h = static_cast<GuiHandle*>(user_data);
-    if (!h || !h->onContentSize) return;
+    if (!h || !h->onContentSizeChanged) return;
+    // Suppress within 300 ms of any resize
+    if (nowMs() - h->lastResizeMs < 300) return;
 
     JSCValue* value = webkit_javascript_result_get_js_value(js_result);
     if (!jsc_value_is_string(value)) return;
@@ -36,7 +54,12 @@ static void on_script_message(WebKitUserContentManager* /*manager*/,
     int width = 0;
     int height = 0;
     if (sscanf(msg, "NGSIZE:%dx%d", &width, &height) == 2) {
-        h->onContentSize(width, height);
+        // Only fire when size actually changed
+        if (width != h->lastContentWidth || height != h->lastContentHeight) {
+            h->lastContentWidth = width;
+            h->lastContentHeight = height;
+            h->onContentSizeChanged(width, height);
+        }
     }
     g_free(msg);
 }
@@ -72,6 +95,7 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     }
 
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), h);
+    g_signal_connect(window, "configure-event", G_CALLBACK(on_configure_event), h);
 
     // Create WebKit webview
     WebKitUserContentManager* manager = webkit_user_content_manager_new();
@@ -148,6 +172,7 @@ static gboolean move_idle(gpointer data) {
 static gboolean resize_idle(gpointer data) {
     ResizeData* req = static_cast<ResizeData*>(data);
     if (req->handle && req->handle->window && GTK_IS_WIDGET(req->handle->window)) {
+        req->handle->lastResizeMs = nowMs();
         gtk_window_resize(GTK_WINDOW(req->handle->window),
                           req->innerWidth > 1 ? req->innerWidth : 1,
                           req->innerHeight > 1 ? req->innerHeight : 1);
@@ -161,10 +186,10 @@ static gboolean resize_idle(gpointer data) {
 // ---------------------------------------------------------------------------
 
 void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
-               std::function<void(int, int)> onContentSize) {
+               std::function<void(int, int)> onContentSizeChanged) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
-    h->onContentSize = std::move(onContentSize);
+    h->onContentSizeChanged = std::move(onContentSizeChanged);
 
     // Launch the GUI on its own thread with its own GTK main loop
     h->uiThread = std::thread(gui_thread_func, opts, h);

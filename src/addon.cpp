@@ -67,14 +67,14 @@ public:
             hasOnClose_ = true;
         }
 
-        if (opts.Has("onContentSize") && opts.Get("onContentSize").IsFunction()) {
-            onContentSizeRef_ = Napi::Persistent(opts.Get("onContentSize").As<Napi::Function>());
+        if (opts.Has("onContentSizeChanged") && opts.Get("onContentSizeChanged").IsFunction()) {
+            onContentSizeRef_ = Napi::Persistent(opts.Get("onContentSizeChanged").As<Napi::Function>());
             onContentSizeRef_.SuppressDestruct();
             hasOnContentSize_ = true;
             contentSizeTsfn_ = Napi::ThreadSafeFunction::New(
                 env,
                 onContentSizeRef_.Value(),
-                "GuiOnContentSize",
+                "GuiOnContentSizeChanged",
                 0,
                 1
             );
