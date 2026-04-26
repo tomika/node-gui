@@ -2,6 +2,7 @@
 // Requires WebView2Loader.dll and the WebView2 SDK headers.
 
 #include "gui_window.h"
+#include "gui_common.h"
 
 #ifdef _WIN32
 
@@ -21,6 +22,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <climits>
 
 // WebView2 headers (from the Microsoft.Web.WebView2 NuGet package)
 #include "WebView2.h"
@@ -35,18 +37,92 @@ static int64_t nowMs() {
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+static const UINT_PTR kContentFlushTimerId = 0x4E47;
+static const UINT_PTR kUserResizeTimerId   = 0x4E48;
+static const UINT_PTR kProgResizeTimerId   = 0x4E49;
+
 struct GuiHandle {
     HWND                    hwnd   = nullptr;
     DWORD                   threadId = 0;
     std::function<void()>   onClosed;
-    std::function<void(int, int)> onContentSizeChanged;
+    std::function<void(const ContentSizeInfo&)> onSizeChanged;
     std::thread             uiThread;
     std::atomic<bool>       closed{false};
     bool                    userResizing{false};
     int64_t                 lastResizeMs{-1000000};
     int                     lastContentWidth{-1};
     int                     lastContentHeight{-1};
+    bool                    hasPendingContentSize{false};
+    int                     pendingContentWidth{0};
+    int                     pendingContentHeight{0};
+    // Latest info reported by the injected JS measurement
+    ContentSizeInfo         lastInfo{};
+    bool                    hasLastInfo{false};
+    // Configuration
+    ContentSizeOptions      sizeOpts{};
+    std::wstring            sizeScript;
+    // User-resize constraints
+    ResizeOptions           resizeOpts{};
+    int                     initialOuterWidth{0};
+    int                     initialOuterHeight{0};
 };
+
+static int handle_suppress_ms(GuiHandle* h) {
+    if (!h) return 300;
+    return std::max(0, h->sizeOpts.suppressDuringResizeMs);
+}
+
+static void emit_event(GuiHandle* h, int width, int height, ContentSizeInfo::Source source) {
+    if (!h || !h->onSizeChanged) return;
+    width = std::max(0, width);
+    height = std::max(0, height);
+
+    if (source == ContentSizeInfo::Source::Content) {
+        if (width == h->lastContentWidth && height == h->lastContentHeight) return;
+    }
+    h->lastContentWidth = width;
+    h->lastContentHeight = height;
+
+    ContentSizeInfo info = h->lastInfo;
+    info.source = source;
+    info.userResizing = h->userResizing;
+    info.contentWidth = width;
+    info.contentHeight = height;
+    h->onSizeChanged(info);
+}
+
+static void emit_content_size_if_changed(GuiHandle* h, int width, int height) {
+    emit_event(h, width, height, ContentSizeInfo::Source::Content);
+}
+
+static void queue_content_size_flush(HWND hwnd, GuiHandle* h, int width, int height) {
+    if (!h || !hwnd) return;
+
+    h->hasPendingContentSize = true;
+    h->pendingContentWidth = std::max(0, width);
+    h->pendingContentHeight = std::max(0, height);
+
+    const int suppressMs = handle_suppress_ms(h);
+    const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+    const int waitMs = (elapsedMs >= suppressMs)
+        ? 1
+        : static_cast<int>(suppressMs - elapsedMs);
+    SetTimer(hwnd, kContentFlushTimerId, waitMs, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Script builder (UTF-8 -> wide for WebView2)
+// ---------------------------------------------------------------------------
+static std::wstring utf8_to_wide(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    std::wstring out(static_cast<size_t>(n), L'\0');
+    if (n > 0) {
+        MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()),
+                            out.data(), n);
+    }
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Window class name
@@ -90,11 +166,59 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     auto* h = reinterpret_cast<GuiHandle*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
 
     switch (msg) {
+    case WM_GETMINMAXINFO: {
+        if (!h) return DefWindowProc(hwnd, msg, wParam, lParam);
+        auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+
+        // Compute the non-client overhead so we can convert inner-size limits
+        // to outer-size limits on the fly. AdjustWindowRectEx with a 0x0 rect
+        // returns the chrome offsets (negative left/top, positive right/bottom).
+        DWORD style   = static_cast<DWORD>(GetWindowLongPtr(hwnd, GWL_STYLE));
+        DWORD exStyle = static_cast<DWORD>(GetWindowLongPtr(hwnd, GWL_EXSTYLE));
+        RECT chrome = {0, 0, 0, 0};
+        AdjustWindowRectEx(&chrome, style, FALSE, exStyle);
+        const int chromeW = (chrome.right - chrome.left);
+        const int chromeH = (chrome.bottom - chrome.top);
+
+        long minOuterW = 0, minOuterH = 0;
+        long maxOuterW = LONG_MAX, maxOuterH = LONG_MAX;
+
+        const auto& outer = h->resizeOpts.outerSize;
+        if (outer.hasMinWidth)  minOuterW = std::max<long>(minOuterW, outer.minWidth);
+        if (outer.hasMinHeight) minOuterH = std::max<long>(minOuterH, outer.minHeight);
+        if (outer.hasMaxWidth)  maxOuterW = std::min<long>(maxOuterW, outer.maxWidth);
+        if (outer.hasMaxHeight) maxOuterH = std::min<long>(maxOuterH, outer.maxHeight);
+
+        const auto& inner = h->resizeOpts.innerSize;
+        if (inner.hasMinWidth)  minOuterW = std::max<long>(minOuterW, inner.minWidth  + chromeW);
+        if (inner.hasMinHeight) minOuterH = std::max<long>(minOuterH, inner.minHeight + chromeH);
+        if (inner.hasMaxWidth)  maxOuterW = std::min<long>(maxOuterW, inner.maxWidth  + chromeW);
+        if (inner.hasMaxHeight) maxOuterH = std::min<long>(maxOuterH, inner.maxHeight + chromeH);
+
+        // Axis lock: pin the locked axis to the initial outer dimension.
+        if (h->resizeOpts.axis == "widthOnly" && h->initialOuterHeight > 0) {
+            minOuterH = maxOuterH = h->initialOuterHeight;
+        } else if (h->resizeOpts.axis == "heightOnly" && h->initialOuterWidth > 0) {
+            minOuterW = maxOuterW = h->initialOuterWidth;
+        }
+
+        if (minOuterW > 0)            mmi->ptMinTrackSize.x = minOuterW;
+        if (minOuterH > 0)            mmi->ptMinTrackSize.y = minOuterH;
+        if (maxOuterW != LONG_MAX)    mmi->ptMaxTrackSize.x = maxOuterW;
+        if (maxOuterH != LONG_MAX)    mmi->ptMaxTrackSize.y = maxOuterH;
+        return 0;
+    }
     case WM_ENTERSIZEMOVE:
         if (h) { h->userResizing = true; h->lastResizeMs = nowMs(); }
         return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_EXITSIZEMOVE:
-        if (h) { h->userResizing = false; h->lastResizeMs = nowMs(); }
+        if (h) {
+            h->userResizing = false;
+            h->lastResizeMs = nowMs();
+            if (h->sizeOpts.emitOnUserResize) {
+                SetTimer(hwnd, kUserResizeTimerId, handle_suppress_ms(h), nullptr);
+            }
+        }
         return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_SIZE: {
         // Resize the webview controller to match the window
@@ -109,6 +233,44 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (h && h->userResizing) h->lastResizeMs = nowMs();
         return 0;
     }
+    case WM_TIMER:
+        if (wParam == kContentFlushTimerId) {
+            KillTimer(hwnd, kContentFlushTimerId);
+            if (!h || !h->hasPendingContentSize) return 0;
+
+            const int suppressMs = handle_suppress_ms(h);
+            const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+            if (h->userResizing || elapsedMs < suppressMs) {
+                const int waitMs = h->userResizing
+                    ? suppressMs
+                    : static_cast<int>(suppressMs - elapsedMs);
+                SetTimer(hwnd, kContentFlushTimerId, waitMs, nullptr);
+                return 0;
+            }
+
+            const int width = h->pendingContentWidth;
+            const int height = h->pendingContentHeight;
+            h->hasPendingContentSize = false;
+            emit_content_size_if_changed(h, width, height);
+            return 0;
+        }
+        if (wParam == kUserResizeTimerId) {
+            KillTimer(hwnd, kUserResizeTimerId);
+            if (!h) return 0;
+            const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+            const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+            emit_event(h, w, hh, ContentSizeInfo::Source::UserResize);
+            return 0;
+        }
+        if (wParam == kProgResizeTimerId) {
+            KillTimer(hwnd, kProgResizeTimerId);
+            if (!h) return 0;
+            const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+            const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+            emit_event(h, w, hh, ContentSizeInfo::Source::ProgrammaticResize);
+            return 0;
+        }
+        return DefWindowProc(hwnd, msg, wParam, lParam);
     case WM_CLOSE:
         DestroyWindow(hwnd);
         return 0;
@@ -136,11 +298,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             if (h) h->lastResizeMs = nowMs();
             SetWindowPos(hwnd, nullptr, 0, 0, outerW, outerH,
                          SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+            if (h && h->sizeOpts.emitOnProgrammaticResize) {
+                SetTimer(hwnd, kProgResizeTimerId, handle_suppress_ms(h), nullptr);
+            }
             delete req;
         }
         return 0;
     }
     case WM_DESTROY:
+        KillTimer(hwnd, kContentFlushTimerId);
+        KillTimer(hwnd, kUserResizeTimerId);
+        KillTimer(hwnd, kProgResizeTimerId);
         // Release WebView2 controller stored as a window property
         {
             auto* ctrl = reinterpret_cast<ICoreWebView2Controller*>(
@@ -210,6 +378,15 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     h->threadId = GetCurrentThreadId();
     SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(h));
 
+    // Record initial outer dimensions for axis-lock support (must be after the
+    // window exists so the actual frame includes any DPI/border adjustments).
+    {
+        RECT wr{};
+        GetWindowRect(hwnd, &wr);
+        h->initialOuterWidth  = wr.right  - wr.left;
+        h->initialOuterHeight = wr.bottom - wr.top;
+    }
+
     // Ensure icon is applied even if class icon is unavailable/unchanged.
     if (classIconLarge) {
         SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(classIconLarge));
@@ -251,18 +428,31 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
                             webview->add_WebMessageReceived(
                                 Callback<ICoreWebView2WebMessageReceivedEventHandler>(
                                     [h](ICoreWebView2* /*sender*/, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
-                                        if (!h || !h->onContentSizeChanged) return S_OK;
-                                        // Suppress within 300 ms of any resize
-                                        if (nowMs() - h->lastResizeMs < 300) return S_OK;
+                                        if (!h || !h->onSizeChanged) return S_OK;
                                         LPWSTR msg = nullptr;
                                         if (FAILED(args->TryGetWebMessageAsString(&msg)) || !msg) return S_OK;
+
+                                        // Convert wide -> UTF-8 for the shared parser.
+                                        int n = WideCharToMultiByte(CP_UTF8, 0, msg, -1,
+                                                                    nullptr, 0, nullptr, nullptr);
+                                        std::string u8;
+                                        if (n > 0) {
+                                            u8.resize(static_cast<size_t>(n) - 1);
+                                            WideCharToMultiByte(CP_UTF8, 0, msg, -1,
+                                                                u8.data(), n, nullptr, nullptr);
+                                        }
                                         int w = 0, ht = 0;
-                                        if (swscanf_s(msg, L"NGSIZE:%dx%d", &w, &ht) == 2) {
-                                            // Only fire when size actually changed
-                                            if (w != h->lastContentWidth || ht != h->lastContentHeight) {
-                                                h->lastContentWidth = w;
-                                                h->lastContentHeight = ht;
-                                                h->onContentSizeChanged(w, ht);
+                                        ContentSizeInfo parsed{};
+                                        if (parse_ngsize_message(u8.c_str(), w, ht, parsed)) {
+                                            h->lastInfo = parsed;
+                                            h->hasLastInfo = true;
+
+                                            const int suppressMs = handle_suppress_ms(h);
+                                            const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+                                            if (h->userResizing || elapsedMs < suppressMs) {
+                                                queue_content_size_flush(h->hwnd, h, w, ht);
+                                            } else {
+                                                emit_content_size_if_changed(h, w, ht);
                                             }
                                         }
                                         CoTaskMemFree(msg);
@@ -274,36 +464,10 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
                             EventRegistrationToken navToken;
                             webview->add_NavigationCompleted(
                                 Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                                    [](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* /*args*/) -> HRESULT {
-                                        static const wchar_t* const sizeScript = LR"JS(
-                                            (() => {
-                                                const post = () => {
-                                                    const de = document.documentElement;
-                                                    const body = document.body;
-                                                    const w = Math.max(
-                                                        de ? de.scrollWidth : 0,
-                                                        de ? de.offsetWidth : 0,
-                                                        body ? body.scrollWidth : 0,
-                                                        body ? body.offsetWidth : 0
-                                                    );
-                                                    const h = Math.max(
-                                                        de ? de.scrollHeight : 0,
-                                                        de ? de.offsetHeight : 0,
-                                                        body ? body.scrollHeight : 0,
-                                                        body ? body.offsetHeight : 0
-                                                    );
-                                                    if (window.chrome && window.chrome.webview) {
-                                                        window.chrome.webview.postMessage(`NGSIZE:${w}x${h}`);
-                                                    }
-                                                };
-                                                if (!window.__ngSizeObs) {
-                                                    window.__ngSizeObs = new ResizeObserver(post);
-                                                    window.__ngSizeObs.observe(document.documentElement);
-                                                }
-                                                post();
-                                            })();
-                                        )JS";
-                                        sender->ExecuteScript(sizeScript, nullptr);
+                                    [h](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* /*args*/) -> HRESULT {
+                                        if (h && !h->sizeScript.empty()) {
+                                            sender->ExecuteScript(h->sizeScript.c_str(), nullptr);
+                                        }
                                         return S_OK;
                                     }).Get(),
                                 &navToken);
@@ -359,11 +523,16 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 // Public API
 // ---------------------------------------------------------------------------
 
-void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
-               std::function<void(int, int)> onContentSizeChanged) {
+void* gui_open(const GuiOptions& opts, const ContentSizeOptions& sizeOpts,
+               const ResizeOptions& resizeOpts,
+               std::function<void()> onClosed,
+               std::function<void(const ContentSizeInfo&)> onSizeChanged) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
-    h->onContentSizeChanged = std::move(onContentSizeChanged);
+    h->onSizeChanged = std::move(onSizeChanged);
+    h->sizeOpts = sizeOpts;
+    h->resizeOpts = resizeOpts;
+    h->sizeScript = utf8_to_wide(build_size_script(sizeOpts));
 
     h->uiThread = std::thread(gui_thread_func, opts, h);
     h->uiThread.detach();

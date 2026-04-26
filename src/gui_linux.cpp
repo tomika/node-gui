@@ -1,10 +1,12 @@
 // gui_linux.cpp – Linux implementation using GTK3 + WebKitGTK
 #include "gui_window.h"
+#include "gui_common.h"
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
 #include <thread>
 #include <string>
 #include <atomic>
+#include <algorithm>
 #include <mutex>
 #include <cstdlib>
 #include <chrono>
@@ -18,32 +20,202 @@ struct WindowSizeData {
 struct GuiHandle {
     GtkWidget*              window;
     std::function<void()>   onClosed;
-    std::function<void(int, int)> onContentSizeChanged;
+    std::function<void(const ContentSizeInfo&)> onSizeChanged;
     std::thread             uiThread;
     std::atomic<bool>       closed{false};
     int64_t                 lastResizeMs{-1000000};
     int                     lastContentWidth{-1};
     int                     lastContentHeight{-1};
+    bool                    hasPendingContentSize{false};
+    int                     pendingContentWidth{0};
+    int                     pendingContentHeight{0};
+    guint                   contentFlushSourceId{0};
+    bool                    userResizing{false};
+    guint                   userResizeIdleId{0};
+    guint                   programmaticResizeIdleId{0};
+    ContentSizeInfo         lastInfo{};
+    bool                    hasLastInfo{false};
+    ContentSizeOptions      sizeOpts{};
+    std::string             sizeScript;
+    ResizeOptions           resizeOpts{};
+    int                     initialOuterWidth{0};
+    int                     initialOuterHeight{0};
 };
+
+static int handle_suppress_ms(GuiHandle* h) {
+    if (!h) return 300;
+    return std::max(0, h->sizeOpts.suppressDuringResizeMs);
+}
 
 static int64_t nowMs() {
     using namespace std::chrono;
     return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+static void emit_event(GuiHandle* h, int width, int height, ContentSizeInfo::Source source) {
+    if (!h || !h->onSizeChanged) return;
+    width = std::max(0, width);
+    height = std::max(0, height);
+    if (source == ContentSizeInfo::Source::Content) {
+        if (width == h->lastContentWidth && height == h->lastContentHeight) return;
+    }
+    h->lastContentWidth = width;
+    h->lastContentHeight = height;
+    ContentSizeInfo info = h->lastInfo;
+    info.source = source;
+    info.userResizing = h->userResizing;
+    info.contentWidth = width;
+    info.contentHeight = height;
+    h->onSizeChanged(info);
+}
+
+static void emit_content_size_if_changed(GuiHandle* h, int width, int height) {
+    emit_event(h, width, height, ContentSizeInfo::Source::Content);
+}
+
+static gboolean content_size_flush_cb(gpointer data) {
+    auto* h = static_cast<GuiHandle*>(data);
+    if (!h) return G_SOURCE_REMOVE;
+
+    h->contentFlushSourceId = 0;
+    if (!h->hasPendingContentSize) return G_SOURCE_REMOVE;
+
+    const int suppressMs = handle_suppress_ms(h);
+    const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+    if (elapsedMs < suppressMs) {
+        const int waitMs = static_cast<int>(suppressMs - elapsedMs);
+        h->contentFlushSourceId = g_timeout_add(waitMs, content_size_flush_cb, h);
+        return G_SOURCE_REMOVE;
+    }
+
+    const int width = h->pendingContentWidth;
+    const int height = h->pendingContentHeight;
+    h->hasPendingContentSize = false;
+    emit_content_size_if_changed(h, width, height);
+    return G_SOURCE_REMOVE;
+}
+
+static void queue_content_size_flush(GuiHandle* h, int width, int height) {
+    if (!h) return;
+
+    h->hasPendingContentSize = true;
+    h->pendingContentWidth = std::max(0, width);
+    h->pendingContentHeight = std::max(0, height);
+
+    if (h->contentFlushSourceId != 0) {
+        g_source_remove(h->contentFlushSourceId);
+        h->contentFlushSourceId = 0;
+    }
+
+    const int suppressMs = handle_suppress_ms(h);
+    const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+    const int waitMs = (elapsedMs >= suppressMs)
+        ? 1
+        : static_cast<int>(suppressMs - elapsedMs);
+    h->contentFlushSourceId = g_timeout_add(waitMs, content_size_flush_cb, h);
+}
+
+static gboolean user_resize_idle_cb(gpointer data) {
+    auto* h = static_cast<GuiHandle*>(data);
+    if (!h) return G_SOURCE_REMOVE;
+    h->userResizeIdleId = 0;
+    h->userResizing = false;
+    if (h->sizeOpts.emitOnUserResize) {
+        const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+        const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        emit_event(h, w, hh, ContentSizeInfo::Source::UserResize);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean programmatic_resize_idle_cb(gpointer data) {
+    auto* h = static_cast<GuiHandle*>(data);
+    if (!h) return G_SOURCE_REMOVE;
+    h->programmaticResizeIdleId = 0;
+    if (h->sizeOpts.emitOnProgrammaticResize) {
+        const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+        const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        emit_event(h, w, hh, ContentSizeInfo::Source::ProgrammaticResize);
+    }
+    return G_SOURCE_REMOVE;
+}
+
 static gboolean on_configure_event(GtkWidget* /*widget*/, GdkEventConfigure* /*event*/, gpointer data) {
     auto* h = static_cast<GuiHandle*>(data);
-    if (h) h->lastResizeMs = nowMs();
+    if (!h) return FALSE;
+    h->lastResizeMs = nowMs();
+    h->userResizing = true;
+    if (h->userResizeIdleId != 0) {
+        g_source_remove(h->userResizeIdleId);
+    }
+    h->userResizeIdleId = g_timeout_add(handle_suppress_ms(h), user_resize_idle_cb, h);
     return FALSE;
+}
+
+// Re-apply geometry hints once the window has been realized: at that point we
+// know the real outer size (from gtk_window_get_size + frame extents) and can
+// translate inner-size limits to outer-size limits accurately, plus pin the
+// locked axis for axis = 'widthOnly' / 'heightOnly'.
+static void apply_resize_constraints_after_realize(GtkWidget* widget, gpointer data) {
+    auto* h = static_cast<GuiHandle*>(data);
+    if (!h || !widget) return;
+
+    GtkWindow* gw = GTK_WINDOW(widget);
+    int outerW = 0, outerH = 0;
+    gtk_window_get_size(gw, &outerW, &outerH);
+    if (h->initialOuterWidth  == 0) h->initialOuterWidth  = outerW;
+    if (h->initialOuterHeight == 0) h->initialOuterHeight = outerH;
+
+    // Estimate chrome offset by comparing window size to webview allocation.
+    GtkWidget* child = gtk_bin_get_child(GTK_BIN(widget));
+    int chromeW = 0, chromeH = 0;
+    if (child) {
+        GtkAllocation alloc{};
+        gtk_widget_get_allocation(child, &alloc);
+        if (alloc.width > 0 && alloc.height > 0) {
+            chromeW = std::max(0, outerW - alloc.width);
+            chromeH = std::max(0, outerH - alloc.height);
+        }
+    }
+
+    const auto& ro = h->resizeOpts;
+    int minW = 1, minH = 1, maxW = G_MAXINT, maxH = G_MAXINT;
+    if (ro.outerSize.hasMinWidth)  minW = std::max(minW, ro.outerSize.minWidth);
+    if (ro.outerSize.hasMinHeight) minH = std::max(minH, ro.outerSize.minHeight);
+    if (ro.outerSize.hasMaxWidth)  maxW = std::min(maxW, ro.outerSize.maxWidth);
+    if (ro.outerSize.hasMaxHeight) maxH = std::min(maxH, ro.outerSize.maxHeight);
+    if (ro.innerSize.hasMinWidth)  minW = std::max(minW, ro.innerSize.minWidth  + chromeW);
+    if (ro.innerSize.hasMinHeight) minH = std::max(minH, ro.innerSize.minHeight + chromeH);
+    if (ro.innerSize.hasMaxWidth)  maxW = std::min(maxW, ro.innerSize.maxWidth  + chromeW);
+    if (ro.innerSize.hasMaxHeight) maxH = std::min(maxH, ro.innerSize.maxHeight + chromeH);
+
+    if (ro.axis == "widthOnly"  && h->initialOuterHeight > 0) {
+        minH = maxH = h->initialOuterHeight;
+    } else if (ro.axis == "heightOnly" && h->initialOuterWidth > 0) {
+        minW = maxW = h->initialOuterWidth;
+    }
+
+    bool haveAny = ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight ||
+                   ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight ||
+                   ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight ||
+                   ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight ||
+                   ro.axis != "both";
+    if (!haveAny) return;
+
+    GdkGeometry geom{};
+    geom.min_width  = minW;
+    geom.min_height = minH;
+    geom.max_width  = maxW;
+    geom.max_height = maxH;
+    gtk_window_set_geometry_hints(gw, nullptr,
+        &geom, (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
 }
 
 static void on_script_message(WebKitUserContentManager* /*manager*/,
                               WebKitJavascriptResult* js_result,
                               gpointer user_data) {
     auto* h = static_cast<GuiHandle*>(user_data);
-    if (!h || !h->onContentSizeChanged) return;
-    // Suppress within 300 ms of any resize
-    if (nowMs() - h->lastResizeMs < 300) return;
+    if (!h || !h->onSizeChanged) return;
 
     JSCValue* value = webkit_javascript_result_get_js_value(js_result);
     if (!jsc_value_is_string(value)) return;
@@ -51,14 +223,18 @@ static void on_script_message(WebKitUserContentManager* /*manager*/,
     gchar* msg = jsc_value_to_string(value);
     if (!msg) return;
 
-    int width = 0;
-    int height = 0;
-    if (sscanf(msg, "NGSIZE:%dx%d", &width, &height) == 2) {
-        // Only fire when size actually changed
-        if (width != h->lastContentWidth || height != h->lastContentHeight) {
-            h->lastContentWidth = width;
-            h->lastContentHeight = height;
-            h->onContentSizeChanged(width, height);
+    int width = 0, height = 0;
+    ContentSizeInfo parsed{};
+    if (parse_ngsize_message(msg, width, height, parsed)) {
+        h->lastInfo = parsed;
+        h->hasLastInfo = true;
+
+        const int suppressMs = handle_suppress_ms(h);
+        const int64_t elapsedMs = nowMs() - h->lastResizeMs;
+        if (elapsedMs < suppressMs) {
+            queue_content_size_flush(h, width, height);
+        } else {
+            emit_content_size_if_changed(h, width, height);
         }
     }
     g_free(msg);
@@ -67,6 +243,18 @@ static void on_script_message(WebKitUserContentManager* /*manager*/,
 // Called on the GTK thread when the window is destroyed
 static void on_destroy(GtkWidget* /*widget*/, gpointer data) {
     auto* h = static_cast<GuiHandle*>(data);
+    if (h->contentFlushSourceId != 0) {
+        g_source_remove(h->contentFlushSourceId);
+        h->contentFlushSourceId = 0;
+    }
+    if (h->userResizeIdleId != 0) {
+        g_source_remove(h->userResizeIdleId);
+        h->userResizeIdleId = 0;
+    }
+    if (h->programmaticResizeIdleId != 0) {
+        g_source_remove(h->programmaticResizeIdleId);
+        h->programmaticResizeIdleId = 0;
+    }
     if (!h->closed.exchange(true)) {
         if (h->onClosed) {
             h->onClosed();
@@ -96,6 +284,44 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 
     g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), h);
     g_signal_connect(window, "configure-event", G_CALLBACK(on_configure_event), h);
+    g_signal_connect_after(window, "map",
+                           G_CALLBACK(apply_resize_constraints_after_realize), h);
+
+    // Apply user-resize constraints. GTK geometry hints apply to the whole
+    // window (outer frame) when no geometry_widget is provided. Inner-size
+    // limits are converted to outer by adding the chrome delta computed from
+    // the current GtkWindow vs. webview allocation. We'll refine after the
+    // window is realized; provide an initial best-effort set now.
+    {
+        const auto& ro = h->resizeOpts;
+        GdkGeometry geom{};
+        GdkWindowHints hintsMask = (GdkWindowHints)0;
+        int minW = 1, minH = 1, maxW = G_MAXINT, maxH = G_MAXINT;
+        if (ro.outerSize.hasMinWidth)  minW = std::max(minW, ro.outerSize.minWidth);
+        if (ro.outerSize.hasMinHeight) minH = std::max(minH, ro.outerSize.minHeight);
+        if (ro.outerSize.hasMaxWidth)  maxW = std::min(maxW, ro.outerSize.maxWidth);
+        if (ro.outerSize.hasMaxHeight) maxH = std::min(maxH, ro.outerSize.maxHeight);
+        // Inner limits: applied as-is here; refined post-realize via configure-event.
+        if (ro.innerSize.hasMinWidth)  minW = std::max(minW, ro.innerSize.minWidth);
+        if (ro.innerSize.hasMinHeight) minH = std::max(minH, ro.innerSize.minHeight);
+        if (ro.innerSize.hasMaxWidth)  maxW = std::min(maxW, ro.innerSize.maxWidth);
+        if (ro.innerSize.hasMaxHeight) maxH = std::min(maxH, ro.innerSize.maxHeight);
+
+        bool haveAny = ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight ||
+                       ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight ||
+                       ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight ||
+                       ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight ||
+                       ro.axis != "both";
+        if (haveAny) {
+            geom.min_width  = minW;
+            geom.min_height = minH;
+            geom.max_width  = maxW;
+            geom.max_height = maxH;
+            hintsMask = (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
+            gtk_window_set_geometry_hints(GTK_WINDOW(window), nullptr, &geom, hintsMask);
+        }
+        // Axis lock is finalized once we know the realized outer size.
+    }
 
     // Create WebKit webview
     WebKitUserContentManager* manager = webkit_user_content_manager_new();
@@ -108,19 +334,7 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     );
     gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(webview));
 
-    const char* sizeScript =
-        "(() => {"
-        "  const post = () => {"
-        "    const de = document.documentElement;"
-        "    const body = document.body;"
-        "    const w = Math.max((de && de.scrollWidth) || 0, (body && body.scrollWidth) || 0);"
-        "    const h = Math.max((de && de.scrollHeight) || 0, (body && body.scrollHeight) || 0);"
-        "    window.webkit.messageHandlers.nodegui.postMessage(`NGSIZE:${w}x${h}`);"
-        "  };"
-        "  new ResizeObserver(post).observe(document.documentElement);"
-        "  window.addEventListener('load', post);"
-        "  post();"
-        "})();";
+    const char* sizeScript = h->sizeScript.c_str();
     WebKitUserScript* script = webkit_user_script_new(
         sizeScript,
         WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
@@ -176,6 +390,14 @@ static gboolean resize_idle(gpointer data) {
         gtk_window_resize(GTK_WINDOW(req->handle->window),
                           req->innerWidth > 1 ? req->innerWidth : 1,
                           req->innerHeight > 1 ? req->innerHeight : 1);
+        if (req->handle->sizeOpts.emitOnProgrammaticResize) {
+            if (req->handle->programmaticResizeIdleId != 0) {
+                g_source_remove(req->handle->programmaticResizeIdleId);
+            }
+            req->handle->programmaticResizeIdleId =
+                g_timeout_add(handle_suppress_ms(req->handle),
+                              programmatic_resize_idle_cb, req->handle);
+        }
     }
     delete req;
     return G_SOURCE_REMOVE;
@@ -185,11 +407,16 @@ static gboolean resize_idle(gpointer data) {
 // Public API
 // ---------------------------------------------------------------------------
 
-void* gui_open(const GuiOptions& opts, std::function<void()> onClosed,
-               std::function<void(int, int)> onContentSizeChanged) {
+void* gui_open(const GuiOptions& opts, const ContentSizeOptions& sizeOpts,
+               const ResizeOptions& resizeOpts,
+               std::function<void()> onClosed,
+               std::function<void(const ContentSizeInfo&)> onSizeChanged) {
     auto* h = new GuiHandle();
     h->onClosed = std::move(onClosed);
-    h->onContentSizeChanged = std::move(onContentSizeChanged);
+    h->onSizeChanged = std::move(onSizeChanged);
+    h->sizeOpts = sizeOpts;
+    h->resizeOpts = resizeOpts;
+    h->sizeScript = build_size_script(sizeOpts);
 
     // Launch the GUI on its own thread with its own GTK main loop
     h->uiThread = std::thread(gui_thread_func, opts, h);

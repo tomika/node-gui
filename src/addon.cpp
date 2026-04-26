@@ -49,6 +49,61 @@ public:
         guiOpts.height = opts.Get("height").As<Napi::Number>().Int32Value();
         guiOpts.port   = opts.Get("port").As<Napi::Number>().Int32Value();
 
+        ContentSizeOptions sizeOpts; // defaults
+        if (opts.Has("contentSizeOptions") && opts.Get("contentSizeOptions").IsObject()) {
+            Napi::Object cso = opts.Get("contentSizeOptions").As<Napi::Object>();
+            if (cso.Has("axes") && cso.Get("axes").IsString()) {
+                sizeOpts.axes = cso.Get("axes").As<Napi::String>().Utf8Value();
+            }
+            if (cso.Has("scrollbarGutter") && cso.Get("scrollbarGutter").IsString()) {
+                sizeOpts.scrollbarGutter = cso.Get("scrollbarGutter").As<Napi::String>().Utf8Value();
+            }
+            if (cso.Has("growOnly")) sizeOpts.growOnly = cso.Get("growOnly").ToBoolean();
+            if (cso.Has("shrinkOnly")) sizeOpts.shrinkOnly = cso.Get("shrinkOnly").ToBoolean();
+            if (cso.Has("minDelta") && cso.Get("minDelta").IsNumber()) {
+                sizeOpts.minDelta = cso.Get("minDelta").As<Napi::Number>().Int32Value();
+            }
+            if (cso.Has("debounceMs") && cso.Get("debounceMs").IsNumber()) {
+                sizeOpts.debounceMs = cso.Get("debounceMs").As<Napi::Number>().Int32Value();
+            }
+            if (cso.Has("includeBodyMargin")) {
+                sizeOpts.includeBodyMargin = cso.Get("includeBodyMargin").ToBoolean();
+            }
+            if (cso.Has("suppressDuringResizeMs") && cso.Get("suppressDuringResizeMs").IsNumber()) {
+                sizeOpts.suppressDuringResizeMs = cso.Get("suppressDuringResizeMs").As<Napi::Number>().Int32Value();
+            }
+            if (cso.Has("emitOnUserResize")) {
+                sizeOpts.emitOnUserResize = cso.Get("emitOnUserResize").ToBoolean();
+            }
+            if (cso.Has("emitOnProgrammaticResize")) {
+                sizeOpts.emitOnProgrammaticResize = cso.Get("emitOnProgrammaticResize").ToBoolean();
+            }
+        }
+
+        ResizeOptions resizeOpts; // defaults
+        if (opts.Has("resizeOptions") && opts.Get("resizeOptions").IsObject()) {
+            Napi::Object ro = opts.Get("resizeOptions").As<Napi::Object>();
+            if (ro.Has("axis") && ro.Get("axis").IsString()) {
+                resizeOpts.axis = ro.Get("axis").As<Napi::String>().Utf8Value();
+            }
+            auto readLimits = [&](const char* key, SizeLimits& out) {
+                if (!ro.Has(key) || !ro.Get(key).IsObject()) return;
+                Napi::Object o = ro.Get(key).As<Napi::Object>();
+                auto readInt = [&](const char* k, bool& has, int& v) {
+                    if (o.Has(k) && o.Get(k).IsNumber()) {
+                        has = true;
+                        v = o.Get(k).As<Napi::Number>().Int32Value();
+                    }
+                };
+                readInt("minWidth",  out.hasMinWidth,  out.minWidth);
+                readInt("maxWidth",  out.hasMaxWidth,  out.maxWidth);
+                readInt("minHeight", out.hasMinHeight, out.minHeight);
+                readInt("maxHeight", out.hasMaxHeight, out.maxHeight);
+            };
+            readLimits("innerSize", resizeOpts.innerSize);
+            readLimits("outerSize", resizeOpts.outerSize);
+        }
+
         // Thread-safe function that prevents the N-API instance data from
         // being garbage-collected while the GUI thread is still running.
         // It is released in the onClosed callback when the window closes.
@@ -67,14 +122,14 @@ public:
             hasOnClose_ = true;
         }
 
-        if (opts.Has("onContentSizeChanged") && opts.Get("onContentSizeChanged").IsFunction()) {
-            onContentSizeRef_ = Napi::Persistent(opts.Get("onContentSizeChanged").As<Napi::Function>());
+        if (opts.Has("onSizeChanged") && opts.Get("onSizeChanged").IsFunction()) {
+            onContentSizeRef_ = Napi::Persistent(opts.Get("onSizeChanged").As<Napi::Function>());
             onContentSizeRef_.SuppressDestruct();
             hasOnContentSize_ = true;
             contentSizeTsfn_ = Napi::ThreadSafeFunction::New(
                 env,
                 onContentSizeRef_.Value(),
-                "GuiOnContentSizeChanged",
+                "GuiOnSizeChanged",
                 0,
                 1
             );
@@ -90,7 +145,7 @@ public:
         );
 
         // Open the native window on a background thread
-        handle_ = gui_open(guiOpts, [this]() {
+        handle_ = gui_open(guiOpts, sizeOpts, resizeOpts, [this]() {
             // Called from the GUI thread when the window is closed
             std::lock_guard<std::mutex> lock(mutex_);
             handle_ = nullptr;
@@ -108,23 +163,35 @@ public:
                 tsfn_.Release();
                 tsfn_ = nullptr;
             }
-        }, [this](int width, int height) {
+        }, [this](const ContentSizeInfo& info) {
             std::lock_guard<std::mutex> lock(mutex_);
             if (!contentSizeTsfn_) return;
 
-            struct ContentSizeData {
-                int width;
-                int height;
-            };
-
-            auto* payload = new ContentSizeData{width, height};
+            auto* payload = new ContentSizeInfo(info);
             auto status = contentSizeTsfn_.NonBlockingCall(
                 payload,
-                [](Napi::Env env, Napi::Function jsCb, ContentSizeData* data) {
-                    jsCb.Call({
-                        Napi::Number::New(env, data->width),
-                        Napi::Number::New(env, data->height),
-                    });
+                [](Napi::Env env, Napi::Function jsCb, ContentSizeInfo* data) {
+                    const char* sourceStr =
+                        data->source == ContentSizeInfo::Source::UserResize ? "user-resize" :
+                        data->source == ContentSizeInfo::Source::ProgrammaticResize ? "programmatic-resize" :
+                        "content";
+
+                    Napi::Object infoObj = Napi::Object::New(env);
+                    infoObj.Set("source", Napi::String::New(env, sourceStr));
+                    infoObj.Set("userResizing", Napi::Boolean::New(env, data->userResizing));
+                    infoObj.Set("contentWidth", Napi::Number::New(env, data->contentWidth));
+                    infoObj.Set("contentHeight", Napi::Number::New(env, data->contentHeight));
+                    infoObj.Set("windowWidth", Napi::Number::New(env, data->windowWidth));
+                    infoObj.Set("windowHeight", Napi::Number::New(env, data->windowHeight));
+                    infoObj.Set("viewportWidth", Napi::Number::New(env, data->viewportWidth));
+                    infoObj.Set("viewportHeight", Napi::Number::New(env, data->viewportHeight));
+                    infoObj.Set("verticalScrollbar", Napi::Boolean::New(env, data->verticalScrollbar));
+                    infoObj.Set("verticalScrollbarSize", Napi::Number::New(env, data->verticalScrollbarSize));
+                    infoObj.Set("horizontalScrollbar", Napi::Boolean::New(env, data->horizontalScrollbar));
+                    infoObj.Set("horizontalScrollbarSize", Napi::Number::New(env, data->horizontalScrollbarSize));
+                    infoObj.Set("devicePixelRatio", Napi::Number::New(env, data->devicePixelRatio));
+
+                    jsCb.Call({ infoObj });
                     delete data;
                 }
             );

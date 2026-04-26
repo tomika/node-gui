@@ -147,4 +147,119 @@ test('onClose callback is invoked when window is closed', () => {
   });
 });
 
+test('open() throws when contentSizeOptions is not an object', () => {
+  assert.throws(
+    () => gui.open({ width: 800, height: 600, port: 3000, contentSizeOptions: 'bad' }),
+    /contentSizeOptions must be an object/
+  );
+});
+
+test('open() throws on invalid contentSizeOptions.axes', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      contentSizeOptions: { axes: 'diagonal' },
+    }),
+    /axes must be 'both', 'width' or 'height'/
+  );
+});
+
+test('open() throws on invalid contentSizeOptions.scrollbarGutter', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      contentSizeOptions: { scrollbarGutter: 'invisible' },
+    }),
+    /scrollbarGutter must be 'auto', 'stable' or 'stable-both'/
+  );
+});
+
+test('open() throws when contentSizeOptions.minDelta is negative', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      contentSizeOptions: { minDelta: -1 },
+    }),
+    /minDelta must be a non-negative number/
+  );
+});
+
+test('open() throws when contentSizeOptions.growOnly is not a boolean', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      contentSizeOptions: { growOnly: 1 },
+    }),
+    /growOnly must be a boolean/
+  );
+});
+
+test('open() accepts valid contentSizeOptions', () => {
+  const win = gui.open({
+    width: 800, height: 600, port: 3000,
+    contentSizeOptions: {
+      axes: 'height',
+      scrollbarGutter: 'stable',
+      growOnly: false,
+      shrinkOnly: false,
+      minDelta: 2,
+      debounceMs: 50,
+      includeBodyMargin: true,
+      suppressDuringResizeMs: 250,
+      emitOnUserResize: true,
+      emitOnProgrammaticResize: false,
+    },
+  });
+  win.close();
+});
+
+test('open() throws when resizeOptions is not an object', () => {
+  assert.throws(
+    () => gui.open({ width: 800, height: 600, port: 3000, resizeOptions: 'bad' }),
+    /resizeOptions must be an object/
+  );
+});
+
+test('open() throws on invalid resizeOptions.axis', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      resizeOptions: { axis: 'diagonal' },
+    }),
+    /resizeOptions\.axis/
+  );
+});
+
+test('open() throws on negative innerSize.minWidth', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      resizeOptions: { innerSize: { minWidth: -1 } },
+    }),
+    /resizeOptions\.innerSize\.minWidth/
+  );
+});
+
+test('open() throws when innerSize.minWidth > maxWidth', () => {
+  assert.throws(
+    () => gui.open({
+      width: 800, height: 600, port: 3000,
+      resizeOptions: { innerSize: { minWidth: 500, maxWidth: 200 } },
+    }),
+    /minWidth must not exceed maxWidth/
+  );
+});
+
+test('open() accepts valid resizeOptions with partial limits', () => {
+  const win = gui.open({
+    width: 800, height: 600, port: 3000,
+    resizeOptions: {
+      axis: 'heightOnly',
+      innerSize: { minHeight: 200 },
+      outerSize: { maxWidth: 1600 },
+    },
+  });
+  win.close();
+});
+
 console.log(`\n${passed} tests passed`);

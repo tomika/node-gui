@@ -72,7 +72,9 @@ Opens a native window with an embedded browser navigating to
 | `height` | `number` | yes | Initial window height in pixels |
 | `port` | `number` | yes | Localhost port to connect to (1–65535) |
 | `onClose` | `function` | no | Called when the window is closed |
-| `onContentSize` | `function` | no | Called with web content size: `(width, height)` |
+| `onSizeChanged` | `function` | no | Called as `(info) => void` whenever the rendered content size, the window size, or related state changes. See [Size tracking](#size-tracking) below. |
+| `contentSizeOptions` | `object` | no | Tuning for the content-size observer. See [Size tracking](#size-tracking) below. |
+| `resizeOptions` | `object` | no | Limits applied while the user resizes the window. See [Resize limits](#resize-limits) below. |
 
 Returns a `GuiHandle` with these methods:
 
@@ -83,6 +85,127 @@ Returns a `GuiHandle` with these methods:
 Static `GuiHandle` API:
 
 - `gui.GuiHandle.displayArea()` – Returns `{ left, top, width, height }` of the primary display work area.
+
+## Size tracking
+
+`onSizeChanged(info)` is the single notification channel for everything
+size-related. The native side injects a small JavaScript observer into every
+loaded page that combines a `MutationObserver`, a `ResizeObserver` on
+`<html>` / `<body>` / direct children, and a `window` resize listener. The
+observer measures the rendered content as
+
+```
+max(
+  union(boundingRect of body's child elements) + body padding [+ margin],
+  documentElement.scrollWidth/Height when overflow is present
+)
+```
+
+and posts the result back to Node together with the current window /
+viewport / scrollbar state. To keep the layout stable while the window
+auto-resizes, the observer also sets `documentElement.style.scrollbarGutter`
+according to `contentSizeOptions.scrollbarGutter` so a transient scrollbar
+cannot trigger an oscillating feedback loop.
+
+`info` is an object with the following fields:
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `source` | `'content' \| 'user-resize' \| 'programmatic-resize'` | Why this event fired |
+| `userResizing` | `boolean` | `true` while the user is currently dragging the window edges |
+| `contentWidth`, `contentHeight` | `number` | Measured content size in CSS px |
+| `windowWidth`, `windowHeight` | `number` | `window.innerWidth/Height` at measurement time |
+| `viewportWidth`, `viewportHeight` | `number` | `documentElement.clientWidth/Height` (excludes scrollbar gutter) |
+| `verticalScrollbar`, `verticalScrollbarSize` | `boolean`, `number` | Whether a vertical scrollbar is consuming layout space, and its width in CSS px |
+| `horizontalScrollbar`, `horizontalScrollbarSize` | `boolean`, `number` | Same, for horizontal |
+| `devicePixelRatio` | `number` | `window.devicePixelRatio` at measurement time |
+
+### Event sources
+
+- `'content'` – the measured content size changed (initial load, DOM
+  mutation, ResizeObserver update). While the user is actively dragging the
+  window, `'content'` events are **deferred**, not dropped: the most recent
+  measurement is delivered once the drag settles, after
+  `contentSizeOptions.suppressDuringResizeMs` ms with no further activity.
+- `'user-resize'` – the user finished dragging the window edges. Emitted
+  once after the drag settles when `emitOnUserResize` is enabled (default).
+  Even when the content size didn't change, this event still carries the
+  fresh `windowWidth`/`windowHeight`, so it's a reliable rebase point for
+  apps that mirror window dimensions.
+- `'programmatic-resize'` – `gui.resize()` settled. Emitted once when
+  `emitOnProgrammaticResize` is enabled (default off).
+
+The observer also re-emits when only `windowWidth`/`windowHeight` change
+(e.g. when the user drags an edge that doesn't reflow the content).
+`info.contentWidth`/`Height` will simply repeat the previous value in that
+case, but `info.windowWidth`/`Height` will be current — so `info` is always
+a coherent snapshot.
+
+### `contentSizeOptions`
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `axes` | `'both' \| 'width' \| 'height'` | `'both'` | Restrict which content axes the observer is allowed to report as changing. The other axis is pinned to its previously reported value. |
+| `scrollbarGutter` | `'auto' \| 'stable' \| 'stable-both'` | `'stable'` | Value applied to `documentElement.style.scrollbarGutter`. `'stable'` reserves space for the vertical scrollbar so the page width does not flip when the bar appears or disappears — this prevents the classic feedback loop where auto-resizing a window causes its width to shrink each time a vertical scrollbar flashes. |
+| `growOnly` | `boolean` | `false` | Never report a content size below the previously reported size. |
+| `shrinkOnly` | `boolean` | `false` | Never report a content size above the previously reported size. |
+| `minDelta` | `number` | `1` | Ignore content changes smaller than this many CSS px on each axis. |
+| `debounceMs` | `number` | `0` | If > 0, debounce the JS observer with `setTimeout(debounceMs)`. `0` uses a single `requestAnimationFrame`. |
+| `includeBodyMargin` | `boolean` | `true` | Whether `<body>` margin contributes to the reported content size. |
+| `suppressDuringResizeMs` | `number` | `300` | Defer `'content'` events that arrive within this window of a window resize. The latest measurement is flushed once the resize settles. |
+| `emitOnUserResize` | `boolean` | `true` | Emit a `'user-resize'` event after the user finishes dragging. |
+| `emitOnProgrammaticResize` | `boolean` | `false` | Emit a `'programmatic-resize'` event after `gui.resize()` settles. |
+
+### Example: auto-resize the window to fit a collapsible region
+
+```js
+const win = gui.open({
+  width: 800,
+  height: 600,
+  port,
+  contentSizeOptions: {
+    axes: 'height',           // only adjust height; never touch width
+    scrollbarGutter: 'stable',// stop the scrollbar-flash feedback loop
+    minDelta: 2,
+  },
+  onSizeChanged: (info) => {
+    if (info.source !== 'content') return;
+    if (info.userResizing) return; // ignore while user is dragging
+    win.resize(info.windowWidth, info.contentHeight);
+  },
+});
+```
+
+See [demo/server.js](demo/server.js) for a complete delta-based auto-fit
+example that also preserves manual user resizes.
+
+## Resize limits
+
+`resizeOptions` constrains what the user can do while dragging the window
+edges. Every field is optional; omit a field to leave that dimension
+unconstrained on that side.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `axis` | `'both' \| 'widthOnly' \| 'heightOnly'` | `'both'` | `'widthOnly'` locks height at the initial value; `'heightOnly'` locks width at the initial value. |
+| `innerSize` | `SizeLimits` | `{}` | Limits on the **inner** content area in CSS px (matches `window.innerWidth/Height`). |
+| `outerSize` | `SizeLimits` | `{}` | Limits on the **outer** window frame including title bar / borders. |
+
+Each `SizeLimits` object accepts any subset of `minWidth`, `maxWidth`,
+`minHeight`, `maxHeight` (non-negative numbers). When both `innerSize` and
+`outerSize` constrain the same dimension, the more restrictive value wins.
+
+```js
+gui.open({
+  width: 800, height: 600, port,
+  resizeOptions: {
+    // Allow only horizontal resize; height is fixed at 600.
+    axis: 'widthOnly',
+    innerSize: { minWidth: 400 },        // never shrink content below 400 px
+    outerSize: { maxWidth: 1600 },       // never grow window beyond 1600 px
+  },
+});
+```
 
 ## Standalone packaging
 

@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>node-gui — Collapsible auto-resize demo</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --fg: #1f2328;
+    --card: #ffffff;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --muted: #6e7781;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --card: #161b22;
+      --border: #30363d;
+      --accent: #2f81f7;
+      --muted: #8b949e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    padding: 16px;
+  }
+  h1 {
+    margin: 0 0 4px 0;
+    font-size: 18px;
+  }
+  .lede {
+    color: var(--muted);
+    margin: 0 0 14px 0;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+  .card > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    padding: 10px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .card > summary::-webkit-details-marker { display: none; }
+  .card > summary::before {
+    content: "▶";
+    font-size: 10px;
+    color: var(--accent);
+    transition: transform 120ms ease;
+  }
+  .card[open] > summary::before { transform: rotate(90deg); }
+  .card .body {
+    padding: 0 12px 12px 28px;
+    color: var(--fg);
+  }
+  .card .body p { margin: 6px 0; }
+  .badge {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  ul.tall { margin: 6px 0; padding-left: 18px; }
+  ul.tall li { margin: 3px 0; }
+  .footer {
+    color: var(--muted);
+    font-size: 12px;
+    margin-top: 6px;
+  }
+</style>
+</head>
+<body>
+  <h1>Collapsible sections — window auto-resizes to fit</h1>
+  <p class="lede">Toggle sections; the native window height follows the content.</p>
+
+  <details class="card">
+    <summary>About this demo <span class="badge">small</span></summary>
+    <div class="body">
+      <p>This window uses <code>onSizeChanged</code> with
+        <code>axes: 'height'</code> and <code>scrollbarGutter: 'stable'</code>
+        to grow and shrink only its height as you expand and collapse panels.</p>
+    </div>
+  </details>
+
+  <details class="card" open>
+    <summary>Features <span class="badge">medium</span></summary>
+    <div class="body">
+      <ul class="tall">
+        <li>Native window on Windows, macOS, and Linux</li>
+        <li>Embedded WebView2 / WKWebView / WebKitGTK</li>
+        <li>Auto height fit driven by the page content</li>
+        <li>Width is preserved across content changes</li>
+      </ul>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Lorem ipsum <span class="badge">large</span></summary>
+    <div class="body">
+      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Pellentesque
+        habitant morbi tristique senectus et netus et malesuada fames ac turpis
+        egestas. Vestibulum tortor quam, feugiat vitae, ultricies eget,
+        tempor sit amet, ante.</p>
+      <p>Donec eu libero sit amet quam egestas semper. Aenean ultricies mi
+        vitae est. Mauris placerat eleifend leo. Quisque sit amet est et
+        sapien ullamcorper pharetra.</p>
+      <p>Vestibulum erat wisi, condimentum sed, commodo vitae, ornare sit
+        amet, wisi. Aenean fermentum, elit eget tincidunt condimentum, eros
+        ipsum rutrum orci, sagittis tempus lacus enim ac dui.</p>
+    </div>
+  </details>
+
+  <details class="card">
+    <summary>Diagnostics <span class="badge">live</span></summary>
+    <div class="body">
+      <p>Last reported content size: <code id="size">—</code></p>
+      <p>Window inner size: <code id="winsize">—</code></p>
+      <p>Vertical scrollbar: <code id="vsb">—</code></p>
+    </div>
+  </details>
+
+  <p class="footer">Tip: drag the window edges to resize manually — content
+    events are deferred while you drag and applied once you release.</p>
+
+  <script>
+    // Purely cosmetic: show what the page itself measures so you can
+    // compare with what the native side reports.
+    function refresh() {
+      const de = document.documentElement;
+      const w = de.scrollWidth;
+      const h = de.scrollHeight;
+      const sz = document.getElementById('size');
+      if (sz) sz.textContent = w + ' × ' + h + ' css px';
+      const ws = document.getElementById('winsize');
+      if (ws) ws.textContent = window.innerWidth + ' × ' + window.innerHeight;
+      const vsb = document.getElementById('vsb');
+      if (vsb) {
+        const has = window.innerWidth - de.clientWidth > 0;
+        vsb.textContent = has ? 'visible' : 'hidden';
+      }
+    }
+    new ResizeObserver(refresh).observe(document.documentElement);
+    window.addEventListener('resize', refresh);
+    document.addEventListener('toggle', refresh, true);
+    refresh();
+  </script>
+</body>
+</html>

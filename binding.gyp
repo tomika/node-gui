@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "node_gui",
-      "sources": ["src/addon.cpp"],
+      "sources": ["src/addon.cpp", "src/gui_common.cpp"],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
       ],

@@ -1,0 +1,10 @@
+{
+  "name": "node-gui-demo-collapsible",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo: auto-resize window height to fit collapsible sections.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
