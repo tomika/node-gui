@@ -1,8 +1,9 @@
 # node-gui collapsible demo
 
-A small app that opens a native window with four collapsible sections. The
-native window's **height** automatically follows the rendered content height
-when sections are expanded or collapsed; the **width** is preserved.
+A small app that opens a native window with collapsible sections and a backend
+message panel. The native window's **height** automatically follows rendered
+content height when sections are expanded or collapsed; the **width** is
+preserved.
 
 ## Run
 
@@ -21,7 +22,8 @@ npm start
 
 ## How it works
 
-The demo passes these options to `gui.open`:
+The demo uses internal server mode, so it does not create an `http` server
+directly. It passes these options to `gui.open`:
 
 ```js
 contentSizeOptions: {
@@ -29,10 +31,26 @@ contentSizeOptions: {
   scrollbarGutter: 'stable',// avoid scrollbar-flash feedback loops
   minDelta: 2,
   suppressDuringResizeMs: 250,
-  emitOnUserResize: false,
+  emitOnUserResize: true,
   emitOnProgrammaticResize: false,
-}
+},
+
+frontendDir: __dirname,
+onMessage: async (jsonValue) => {
+  if (jsonValue.type === 'echo') {
+    return { ok: true, echoed: jsonValue.payload };
+  }
+  return { ok: true, input: jsonValue };
+},
 ```
+
+`node-gui` serves:
+
+- `/index.html` (from `frontendDir`)
+- `/node-gui-message.js` (defines `messageToBackend(value)`)
+
+The frontend sends JSON with `messageToBackend(...)`, which performs `POST /`
+and resolves to the callback return value from `onMessage`.
 
 In `onSizeChanged(info)` the demo:
 

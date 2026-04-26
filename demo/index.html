@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>node-gui — Collapsible auto-resize demo</title>
 <style>
   :root {
@@ -49,6 +50,7 @@
   .card > summary {
     list-style: none;
     cursor: pointer;
+    -webkit-user-select: none;
     user-select: none;
     padding: 10px 12px;
     display: flex;
@@ -134,9 +136,22 @@
     </div>
   </details>
 
+  <details class="card" open>
+    <summary>Backend messaging <span class="badge">internal server</span></summary>
+    <div class="body">
+      <p>
+        <label for="msgInput">Payload text:</label>
+        <input id="msgInput" type="text" value="Hello from frontend" />
+        <button id="sendBtn" type="button">Send to backend</button>
+      </p>
+      <p>Response: <code id="msgResp">—</code></p>
+    </div>
+  </details>
+
   <p class="footer">Tip: drag the window edges to resize manually — content
     events are deferred while you drag and applied once you release.</p>
 
+  <script src="/node-gui-message.js"></script>
   <script>
     // Purely cosmetic: show what the page itself measures so you can
     // compare with what the native side reports.
@@ -157,6 +172,28 @@
     new ResizeObserver(refresh).observe(document.documentElement);
     window.addEventListener('resize', refresh);
     document.addEventListener('toggle', refresh, true);
+
+    async function sendToBackend() {
+      const input = document.getElementById('msgInput');
+      const resp = document.getElementById('msgResp');
+      if (!input || !resp) return;
+      try {
+        const value = {
+          type: 'echo',
+          payload: { text: input.value || '' }
+        };
+        const result = await messageToBackend(value);
+        resp.textContent = JSON.stringify(result);
+      } catch (err) {
+        resp.textContent = String(err && err.message ? err.message : err);
+      }
+    }
+
+    const sendBtn = document.getElementById('sendBtn');
+    if (sendBtn) {
+      sendBtn.addEventListener('click', sendToBackend);
+    }
+
     refresh();
   </script>
 </body>

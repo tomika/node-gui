@@ -110,8 +110,33 @@ test('open() throws with invalid height', () => {
 test('open() throws without port', () => {
   assert.throws(
     () => gui.open({ width: 800, height: 600 }),
-    /port must be a number/
+    /port must be a number between 1 and 65535 when options\.onMessage is not provided/
   );
+});
+
+test('open() throws when onMessage is not a function', () => {
+  assert.throws(
+    () => gui.open({ width: 800, height: 600, onMessage: 1 }),
+    /onMessage must be a function/
+  );
+});
+
+test('open() throws when both port and onMessage are provided', () => {
+  assert.throws(
+    () => gui.open({ width: 800, height: 600, port: 3000, onMessage: async (v) => v }),
+    /port must be omitted when options\.onMessage is provided/
+  );
+});
+
+test('open() accepts internal server mode with onMessage callback', () => {
+  const win = gui.open({
+    width: 800,
+    height: 600,
+    onMessage: async (value) => value,
+    frontendDir: __dirname,
+  });
+  assert.strictEqual(typeof win.close, 'function');
+  win.close();
 });
 
 test('open() throws with port out of range', () => {

@@ -1,5 +1,13 @@
 export type ContentSizeSource = 'content' | 'user-resize' | 'programmatic-resize';
 
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: JsonValue }
+  | JsonValue[];
+
 export interface ContentSizeInfo {
   /** Why this event fired. */
   source: ContentSizeSource;
@@ -86,8 +94,26 @@ export interface GuiOptions {
   width: number;
   /** Initial window height in pixels. */
   height: number;
-  /** Localhost port to navigate to (1–65535). */
-  port: number;
+  /**
+   * Localhost port to navigate to (1-65535).
+   * Required when `onMessage` is not provided.
+   */
+  port?: number;
+  /**
+   * Enables internal server mode.
+   * If provided, `port` must be omitted.
+   */
+  onMessage?: (jsonValue: JsonValue) => Promise<JsonValue>;
+  /**
+   * Directory to serve static frontend files from in internal server mode.
+   * Defaults to `process.cwd()`.
+   */
+  frontendDir?: string;
+  /**
+   * Maximum accepted POST body size (bytes) for internal server mode.
+   * Default: `1048576`.
+   */
+  maxMessageBodyBytes?: number;
   /** Callback invoked when the window is closed. */
   onClose?: () => void;
   /** Callback invoked when the content/window size or related state changes. */
@@ -121,6 +147,10 @@ export interface GuiHandleStatic {
 /**
  * Open a native window with an embedded browser control pointing to
  * `http://localhost:<port>`.
+ *
+ * Modes:
+ * - External server mode: pass `port`.
+ * - Internal server mode: pass `onMessage` and omit `port`.
  */
 export function open(options: GuiOptions): GuiHandle;
 

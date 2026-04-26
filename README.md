@@ -5,6 +5,7 @@
 Native GUI window with an embedded browser control for Node.js applications.
 Opens a platform-native webview pointing to `http://localhost:<port>` so your
 Node app can ship with a GUI – users never need to open a browser manually.
+You can either bring your own HTTP server or let `node-gui` host one internally.
 
 ## Platform support
 
@@ -56,6 +57,42 @@ server.listen(0, '127.0.0.1', () => {
 });
 ```
 
+### Usage (internal server + JSON messaging)
+
+```js
+const path = require('path');
+const gui = require('node-gui');
+
+gui.open({
+  width: 900,
+  height: 700,
+  frontendDir: path.join(__dirname, 'frontend'),
+  onMessage: async (jsonValue) => {
+    if (jsonValue && jsonValue.type === 'ping') {
+      return { type: 'pong', at: Date.now() };
+    }
+    return { ok: true, echo: jsonValue };
+  },
+});
+```
+
+In internal mode `node-gui` serves:
+
+- your static frontend files from `frontendDir` (`/` resolves to `index.html`)
+- `/node-gui-message.js`, which defines `messageToBackend(value)` in the page
+
+Use it from your HTML:
+
+```html
+<script src="/node-gui-message.js"></script>
+<script>
+  async function send() {
+    const result = await messageToBackend({ type: 'ping' });
+    console.log(result);
+  }
+</script>
+```
+
 The window title is automatically synced from the HTML `<title>` element.
 Calling `window.close()` in JavaScript closes the native window.
 
@@ -70,7 +107,10 @@ Opens a native window with an embedded browser navigating to
 |--------|------|----------|-------------|
 | `width` | `number` | yes | Initial window width in pixels |
 | `height` | `number` | yes | Initial window height in pixels |
-| `port` | `number` | yes | Localhost port to connect to (1–65535) |
+| `port` | `number` | conditional | Localhost port to connect to (1–65535). Required when `onMessage` is not provided. |
+| `onMessage` | `function` | conditional | Enables internal server mode. Signature: `async (jsonValue) => Promise<jsonValue>`. When provided, `port` must be omitted. |
+| `frontendDir` | `string` | no | Directory served by internal server mode. `/` maps to `index.html`. Default: `process.cwd()`. |
+| `maxMessageBodyBytes` | `number` | no | Maximum size of POST `/` JSON request body in internal mode. Default: `1048576`. |
 | `onClose` | `function` | no | Called when the window is closed |
 | `onSizeChanged` | `function` | no | Called as `(info) => void` whenever the rendered content size, the window size, or related state changes. See [Size tracking](#size-tracking) below. |
 | `contentSizeOptions` | `object` | no | Tuning for the content-size observer. See [Size tracking](#size-tracking) below. |
