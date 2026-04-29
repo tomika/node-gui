@@ -251,8 +251,16 @@ test('open() throws on invalid resizeOptions.axis', () => {
       width: 800, height: 600, port: 3000,
       resizeOptions: { axis: 'diagonal' },
     }),
-    /resizeOptions\.axis/
+    /'both', 'widthOnly', 'heightOnly' or 'none'/
   );
+});
+
+test('open() accepts resizeOptions.axis = none', () => {
+  const win = gui.open({
+    width: 800, height: 600, port: 3000,
+    resizeOptions: { axis: 'none' },
+  });
+  win.close();
 });
 
 test('open() throws on negative innerSize.minWidth', () => {

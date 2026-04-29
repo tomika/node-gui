@@ -46,7 +46,49 @@ struct GuiHandle {
     ResizeOptions               resizeOpts{};
     int                         initialOuterWidth{0};
     int                         initialOuterHeight{0};
+    bool                        programmaticResizeInProgress{false};
 };
+
+static NSSize clamp_user_resize_target(GuiHandle* h, NSWindow* window, NSSize proposedFrameSize) {
+    if (!h || !window) return proposedFrameSize;
+
+    const auto& ro = h->resizeOpts;
+    const NSRect frame = [window frame];
+    const NSRect content = [window contentRectForFrameRect:frame];
+    const CGFloat chromeW = std::max<CGFloat>(0, frame.size.width - content.size.width);
+    const CGFloat chromeH = std::max<CGFloat>(0, frame.size.height - content.size.height);
+
+    CGFloat minW = 0;
+    CGFloat minH = 0;
+    CGFloat maxW = CGFLOAT_MAX;
+    CGFloat maxH = CGFLOAT_MAX;
+
+    if (ro.outerSize.hasMinWidth)  minW = std::max(minW, (CGFloat)ro.outerSize.minWidth);
+    if (ro.outerSize.hasMinHeight) minH = std::max(minH, (CGFloat)ro.outerSize.minHeight);
+    if (ro.outerSize.hasMaxWidth)  maxW = std::min(maxW, (CGFloat)ro.outerSize.maxWidth);
+    if (ro.outerSize.hasMaxHeight) maxH = std::min(maxH, (CGFloat)ro.outerSize.maxHeight);
+
+    if (ro.innerSize.hasMinWidth)  minW = std::max(minW, (CGFloat)ro.innerSize.minWidth + chromeW);
+    if (ro.innerSize.hasMinHeight) minH = std::max(minH, (CGFloat)ro.innerSize.minHeight + chromeH);
+    if (ro.innerSize.hasMaxWidth)  maxW = std::min(maxW, (CGFloat)ro.innerSize.maxWidth + chromeW);
+    if (ro.innerSize.hasMaxHeight) maxH = std::min(maxH, (CGFloat)ro.innerSize.maxHeight + chromeH);
+
+    if (ro.axis == "widthOnly") {
+        const CGFloat curH = frame.size.height;
+        if (curH > 0) minH = maxH = curH;
+    } else if (ro.axis == "heightOnly") {
+        const CGFloat curW = frame.size.width;
+        if (curW > 0) minW = maxW = curW;
+    } else if (ro.axis == "none") {
+        if (frame.size.width > 0)  minW = maxW = frame.size.width;
+        if (frame.size.height > 0) minH = maxH = frame.size.height;
+    }
+
+    NSSize out = proposedFrameSize;
+    out.width = std::min(maxW, std::max(minW, out.width));
+    out.height = std::min(maxH, std::max(minH, out.height));
+    return out;
+}
 
 static int handle_suppress_ms(GuiHandle* h) {
     if (!h) return 300;
@@ -93,7 +135,8 @@ static void queue_content_size_flush(GuiHandle* h, int width, int height) {
         if (!h || h->contentFlushGeneration != gen || !h->hasPendingContentSize) return;
 
         const int64_t elapsedMsInner = nowMs() - h->lastResizeMs;
-        if (elapsedMsInner < handle_suppress_ms(h)) {
+        const int suppressMsInner = handle_suppress_ms(h);
+        if (suppressMsInner > 0 && elapsedMsInner < suppressMsInner) {
             queue_content_size_flush(h, h->pendingContentWidth, h->pendingContentHeight);
             return;
         }
@@ -112,8 +155,15 @@ static void schedule_user_resize_emit(GuiHandle* h) {
                    dispatch_get_main_queue(), ^{
         if (!h || h->userResizeGeneration != gen) return;
         h->userResizing = false;
-        const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
-        const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        // Prefer freshest pending content size over stale lastContent*.
+        int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+        int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        if (h->hasPendingContentSize) {
+            w = h->pendingContentWidth;
+            hh = h->pendingContentHeight;
+            h->hasPendingContentSize = false;
+            ++h->contentFlushGeneration;
+        }
         emit_event(h, w, hh, ContentSizeInfo::Source::UserResize);
     });
 }
@@ -142,9 +192,19 @@ static void schedule_programmatic_resize_emit(GuiHandle* h) {
 @end
 
 @implementation NodeGuiWindowDelegate
+- (NSSize)windowWillResize:(NSWindow*)sender toSize:(NSSize)frameSize {
+    GuiHandle* h = self.handle;
+    if (!h || h->programmaticResizeInProgress) return frameSize;
+    return clamp_user_resize_target(h, sender, frameSize);
+}
+
 - (void)windowDidResize:(NSNotification*)notification {
     GuiHandle* h = self.handle;
     if (!h) return;
+    if (h->programmaticResizeInProgress) {
+        h->lastResizeMs = nowMs();
+        return;
+    }
     h->lastResizeMs = nowMs();
     h->userResizing = true;
     schedule_user_resize_emit(h);
@@ -189,7 +249,7 @@ static void schedule_programmatic_resize_emit(GuiHandle* h) {
 
         const int suppressMs = handle_suppress_ms(h);
         const int64_t elapsedMs = nowMs() - h->lastResizeMs;
-        if (elapsedMs < suppressMs) {
+        if (suppressMs > 0 && elapsedMs < suppressMs) {
             queue_content_size_flush(h, w, ht);
         } else {
             emit_content_size_if_changed(h, w, ht);
@@ -262,52 +322,11 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
         [window makeKeyAndOrderFront:nil];
         [NSApp activateIgnoringOtherApps:YES];
 
-        // Apply user-resize constraints. NSWindow distinguishes inner (content)
-        // and outer (frame) limits via separate setters.
+        // Snapshot initial outer dimensions for axis-lock constraints.
         {
-            const auto& ro = h->resizeOpts;
             NSRect curFrame = [window frame];
             h->initialOuterWidth  = (int)curFrame.size.width;
             h->initialOuterHeight = (int)curFrame.size.height;
-
-            if (ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight) {
-                NSSize cur = [window contentMinSize];
-                NSSize s = NSMakeSize(
-                    ro.innerSize.hasMinWidth  ? (CGFloat)ro.innerSize.minWidth  : cur.width,
-                    ro.innerSize.hasMinHeight ? (CGFloat)ro.innerSize.minHeight : cur.height);
-                [window setContentMinSize:s];
-            }
-            if (ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight) {
-                NSSize s = NSMakeSize(
-                    ro.innerSize.hasMaxWidth  ? (CGFloat)ro.innerSize.maxWidth  : CGFLOAT_MAX,
-                    ro.innerSize.hasMaxHeight ? (CGFloat)ro.innerSize.maxHeight : CGFLOAT_MAX);
-                [window setContentMaxSize:s];
-            }
-            if (ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight) {
-                NSSize cur = [window minSize];
-                NSSize s = NSMakeSize(
-                    ro.outerSize.hasMinWidth  ? (CGFloat)ro.outerSize.minWidth  : cur.width,
-                    ro.outerSize.hasMinHeight ? (CGFloat)ro.outerSize.minHeight : cur.height);
-                [window setMinSize:s];
-            }
-            if (ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight) {
-                NSSize s = NSMakeSize(
-                    ro.outerSize.hasMaxWidth  ? (CGFloat)ro.outerSize.maxWidth  : CGFLOAT_MAX,
-                    ro.outerSize.hasMaxHeight ? (CGFloat)ro.outerSize.maxHeight : CGFLOAT_MAX);
-                [window setMaxSize:s];
-            }
-            // Axis lock: pin the locked axis at the initial outer dimension.
-            if (ro.axis == "widthOnly") {
-                NSSize lockedMin = NSMakeSize([window minSize].width,  curFrame.size.height);
-                NSSize lockedMax = NSMakeSize([window maxSize].width,  curFrame.size.height);
-                [window setMinSize:lockedMin];
-                [window setMaxSize:lockedMax];
-            } else if (ro.axis == "heightOnly") {
-                NSSize lockedMin = NSMakeSize(curFrame.size.width, [window minSize].height);
-                NSSize lockedMax = NSMakeSize(curFrame.size.width, [window maxSize].height);
-                [window setMinSize:lockedMin];
-                [window setMaxSize:lockedMax];
-            }
         }
 
         // Run the event loop on this thread
@@ -363,9 +382,11 @@ void gui_resize(void* handle, int innerWidth, int innerHeight) {
     if (h->window) {
         dispatch_async(dispatch_get_main_queue(), ^{
             h->lastResizeMs = nowMs();
+            h->programmaticResizeInProgress = true;
             NSSize contentSize = NSMakeSize(innerWidth > 1 ? innerWidth : 1,
                                             innerHeight > 1 ? innerHeight : 1);
             [h->window setContentSize:contentSize];
+            h->programmaticResizeInProgress = false;
             schedule_programmatic_resize_emit(h);
         });
     }

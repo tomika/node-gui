@@ -21,9 +21,10 @@ struct SizeLimits {
 
 // Constraints applied while the user resizes the window with the mouse.
 struct ResizeOptions {
-    // 'both' | 'widthOnly' | 'heightOnly'
+    // 'both' | 'widthOnly' | 'heightOnly' | 'none'
     // 'widthOnly'  -> height is locked at the initial value
     // 'heightOnly' -> width  is locked at the initial value
+    // 'none'       -> both axes are locked for user resize
     std::string axis = "both";
     SizeLimits  innerSize; // limits applied to the inner client area (CSS px before scaling)
     SizeLimits  outerSize; // limits applied to the outer window frame

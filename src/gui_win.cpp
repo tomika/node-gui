@@ -13,6 +13,10 @@
 #define _UNICODE
 #endif
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <windows.h>
 #include <wrl.h>
 #include <string>
@@ -65,6 +69,7 @@ struct GuiHandle {
     ResizeOptions           resizeOpts{};
     int                     initialOuterWidth{0};
     int                     initialOuterHeight{0};
+    bool                    programmaticResizeInProgress{false};
 };
 
 static int handle_suppress_ms(GuiHandle* h) {
@@ -168,6 +173,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
     case WM_GETMINMAXINFO: {
         if (!h) return DefWindowProc(hwnd, msg, wParam, lParam);
+        // resizeOptions are for user-initiated resizing only. Do not clamp
+        // programmatic gui.resize() calls.
+        if (h->programmaticResizeInProgress) {
+            return DefWindowProc(hwnd, msg, wParam, lParam);
+        }
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
 
         // Compute the non-client overhead so we can convert inner-size limits
@@ -195,11 +205,21 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (inner.hasMaxWidth)  maxOuterW = std::min<long>(maxOuterW, inner.maxWidth  + chromeW);
         if (inner.hasMaxHeight) maxOuterH = std::min<long>(maxOuterH, inner.maxHeight + chromeH);
 
-        // Axis lock: pin the locked axis to the initial outer dimension.
-        if (h->resizeOpts.axis == "widthOnly" && h->initialOuterHeight > 0) {
-            minOuterH = maxOuterH = h->initialOuterHeight;
-        } else if (h->resizeOpts.axis == "heightOnly" && h->initialOuterWidth > 0) {
-            minOuterW = maxOuterW = h->initialOuterWidth;
+        // Axis lock: pin the locked axis to the *current* outer dimension,
+        // not the initial one. This way the user cannot drag the locked
+        // axis, but a programmatic gui.resize() that changed the locked
+        // dimension persists across subsequent user drags on the free axis.
+        RECT cur = {0, 0, 0, 0};
+        GetWindowRect(hwnd, &cur);
+        const long curOuterW = cur.right - cur.left;
+        const long curOuterH = cur.bottom - cur.top;
+        if (h->resizeOpts.axis == "widthOnly" && curOuterH > 0) {
+            minOuterH = maxOuterH = curOuterH;
+        } else if (h->resizeOpts.axis == "heightOnly" && curOuterW > 0) {
+            minOuterW = maxOuterW = curOuterW;
+        } else if (h->resizeOpts.axis == "none" && curOuterW > 0 && curOuterH > 0) {
+            minOuterW = maxOuterW = curOuterW;
+            minOuterH = maxOuterH = curOuterH;
         }
 
         if (minOuterW > 0)            mmi->ptMinTrackSize.x = minOuterW;
@@ -240,7 +260,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
             const int suppressMs = handle_suppress_ms(h);
             const int64_t elapsedMs = nowMs() - h->lastResizeMs;
-            if (h->userResizing || elapsedMs < suppressMs) {
+            if (suppressMs > 0 && (h->userResizing || elapsedMs < suppressMs)) {
                 const int waitMs = h->userResizing
                     ? suppressMs
                     : static_cast<int>(suppressMs - elapsedMs);
@@ -257,8 +277,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (wParam == kUserResizeTimerId) {
             KillTimer(hwnd, kUserResizeTimerId);
             if (!h) return 0;
-            const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
-            const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+            // Prefer the most recently measured content size that arrived
+            // during the drag (still pending due to suppression) over the
+            // stale lastContent* from before the drag started.
+            int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+            int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+            if (h->hasPendingContentSize) {
+                w = h->pendingContentWidth;
+                hh = h->pendingContentHeight;
+                h->hasPendingContentSize = false;
+                KillTimer(hwnd, kContentFlushTimerId);
+            }
             emit_event(h, w, hh, ContentSizeInfo::Source::UserResize);
             return 0;
         }
@@ -296,8 +325,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             int outerH = rc.bottom - rc.top;
             // Record programmatic resize time before SetWindowPos (which triggers WM_SIZE)
             if (h) h->lastResizeMs = nowMs();
+            if (h) h->programmaticResizeInProgress = true;
             SetWindowPos(hwnd, nullptr, 0, 0, outerW, outerH,
                          SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+            if (h) h->programmaticResizeInProgress = false;
             if (h && h->sizeOpts.emitOnProgrammaticResize) {
                 SetTimer(hwnd, kProgResizeTimerId, handle_suppress_ms(h), nullptr);
             }
@@ -449,7 +480,7 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
 
                                             const int suppressMs = handle_suppress_ms(h);
                                             const int64_t elapsedMs = nowMs() - h->lastResizeMs;
-                                            if (h->userResizing || elapsedMs < suppressMs) {
+                                            if (suppressMs > 0 && (h->userResizing || elapsedMs < suppressMs)) {
                                                 queue_content_size_flush(h->hwnd, h, w, ht);
                                             } else {
                                                 emit_content_size_if_changed(h, w, ht);

@@ -81,8 +81,9 @@ export interface ResizeOptions {
    * - `'both'` (default): both width and height are resizable.
    * - `'widthOnly'`: height is locked at the initial value; only width can change.
    * - `'heightOnly'`: width is locked at the initial value; only height can change.
+    * - `'none'`: user resize is disabled; programmatic `resize()` still works.
    */
-  axis?: 'both' | 'widthOnly' | 'heightOnly';
+    axis?: 'both' | 'widthOnly' | 'heightOnly' | 'none';
   /** Constraints on the inner content area (CSS px, before scaling). */
   innerSize?: SizeLimits;
   /** Constraints on the outer window frame (includes title bar / borders). */

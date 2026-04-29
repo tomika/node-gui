@@ -114,7 +114,7 @@ Opens a native window with an embedded browser navigating to
 | `onClose` | `function` | no | Called when the window is closed |
 | `onSizeChanged` | `function` | no | Called as `(info) => void` whenever the rendered content size, the window size, or related state changes. See [Size tracking](#size-tracking) below. |
 | `contentSizeOptions` | `object` | no | Tuning for the content-size observer. See [Size tracking](#size-tracking) below. |
-| `resizeOptions` | `object` | no | Limits applied while the user resizes the window. See [Resize limits](#resize-limits) below. |
+| `resizeOptions` | `object` | no | Limits applied while the user resizes the window. They do not restrict programmatic `gui.resize(...)`. See [Resize limits](#resize-limits) below. |
 
 Returns a `GuiHandle` with these methods:
 
@@ -227,7 +227,7 @@ unconstrained on that side.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `axis` | `'both' \| 'widthOnly' \| 'heightOnly'` | `'both'` | `'widthOnly'` locks height at the initial value; `'heightOnly'` locks width at the initial value. |
+| `axis` | `'both' \| 'widthOnly' \| 'heightOnly' \| 'none'` | `'both'` | `'widthOnly'` locks height at the initial value; `'heightOnly'` locks width at the initial value; `'none'` disables user resize while keeping `gui.resize(...)` available. |
 | `innerSize` | `SizeLimits` | `{}` | Limits on the **inner** content area in CSS px (matches `window.innerWidth/Height`). |
 | `outerSize` | `SizeLimits` | `{}` | Limits on the **outer** window frame including title bar / borders. |
 

@@ -40,7 +40,25 @@ struct GuiHandle {
     ResizeOptions           resizeOpts{};
     int                     initialOuterWidth{0};
     int                     initialOuterHeight{0};
+    bool                    programmaticResizeInProgress{false};
 };
+
+static bool has_any_resize_constraints(const ResizeOptions& ro) {
+    return ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight ||
+           ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight ||
+           ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight ||
+           ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight ||
+           ro.axis != "both";
+}
+
+static void apply_resize_hints(GtkWindow* gw, const GdkGeometry* geom, bool enabled) {
+    if (enabled) {
+        gtk_window_set_geometry_hints(gw, nullptr,
+            const_cast<GdkGeometry*>(geom), (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
+    } else {
+        gtk_window_set_geometry_hints(gw, nullptr, nullptr, (GdkWindowHints)0);
+    }
+}
 
 static int handle_suppress_ms(GuiHandle* h) {
     if (!h) return 300;
@@ -82,7 +100,7 @@ static gboolean content_size_flush_cb(gpointer data) {
 
     const int suppressMs = handle_suppress_ms(h);
     const int64_t elapsedMs = nowMs() - h->lastResizeMs;
-    if (elapsedMs < suppressMs) {
+    if (suppressMs > 0 && elapsedMs < suppressMs) {
         const int waitMs = static_cast<int>(suppressMs - elapsedMs);
         h->contentFlushSourceId = g_timeout_add(waitMs, content_size_flush_cb, h);
         return G_SOURCE_REMOVE;
@@ -121,8 +139,18 @@ static gboolean user_resize_idle_cb(gpointer data) {
     h->userResizeIdleId = 0;
     h->userResizing = false;
     if (h->sizeOpts.emitOnUserResize) {
-        const int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
-        const int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        // Prefer freshest pending content size over stale lastContent*.
+        int w = h->lastContentWidth >= 0 ? h->lastContentWidth : 0;
+        int hh = h->lastContentHeight >= 0 ? h->lastContentHeight : 0;
+        if (h->hasPendingContentSize) {
+            w = h->pendingContentWidth;
+            hh = h->pendingContentHeight;
+            h->hasPendingContentSize = false;
+            if (h->contentFlushSourceId != 0) {
+                g_source_remove(h->contentFlushSourceId);
+                h->contentFlushSourceId = 0;
+            }
+        }
         emit_event(h, w, hh, ContentSizeInfo::Source::UserResize);
     }
     return G_SOURCE_REMOVE;
@@ -143,6 +171,10 @@ static gboolean programmatic_resize_idle_cb(gpointer data) {
 static gboolean on_configure_event(GtkWidget* /*widget*/, GdkEventConfigure* /*event*/, gpointer data) {
     auto* h = static_cast<GuiHandle*>(data);
     if (!h) return FALSE;
+    if (h->programmaticResizeInProgress) {
+        h->lastResizeMs = nowMs();
+        return FALSE;
+    }
     h->lastResizeMs = nowMs();
     h->userResizing = true;
     if (h->userResizeIdleId != 0) {
@@ -189,17 +221,16 @@ static void apply_resize_constraints_after_realize(GtkWidget* widget, gpointer d
     if (ro.innerSize.hasMaxWidth)  maxW = std::min(maxW, ro.innerSize.maxWidth  + chromeW);
     if (ro.innerSize.hasMaxHeight) maxH = std::min(maxH, ro.innerSize.maxHeight + chromeH);
 
-    if (ro.axis == "widthOnly"  && h->initialOuterHeight > 0) {
-        minH = maxH = h->initialOuterHeight;
-    } else if (ro.axis == "heightOnly" && h->initialOuterWidth > 0) {
-        minW = maxW = h->initialOuterWidth;
+    if (ro.axis == "widthOnly" && outerH > 0) {
+        minH = maxH = outerH;
+    } else if (ro.axis == "heightOnly" && outerW > 0) {
+        minW = maxW = outerW;
+    } else if (ro.axis == "none" && outerW > 0 && outerH > 0) {
+        minW = maxW = outerW;
+        minH = maxH = outerH;
     }
 
-    bool haveAny = ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight ||
-                   ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight ||
-                   ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight ||
-                   ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight ||
-                   ro.axis != "both";
+    bool haveAny = has_any_resize_constraints(ro);
     if (!haveAny) return;
 
     GdkGeometry geom{};
@@ -207,8 +238,7 @@ static void apply_resize_constraints_after_realize(GtkWidget* widget, gpointer d
     geom.min_height = minH;
     geom.max_width  = maxW;
     geom.max_height = maxH;
-    gtk_window_set_geometry_hints(gw, nullptr,
-        &geom, (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE));
+    apply_resize_hints(gw, &geom, true);
 }
 
 static void on_script_message(WebKitUserContentManager* /*manager*/,
@@ -231,7 +261,7 @@ static void on_script_message(WebKitUserContentManager* /*manager*/,
 
         const int suppressMs = handle_suppress_ms(h);
         const int64_t elapsedMs = nowMs() - h->lastResizeMs;
-        if (elapsedMs < suppressMs) {
+        if (suppressMs > 0 && elapsedMs < suppressMs) {
             queue_content_size_flush(h, width, height);
         } else {
             emit_content_size_if_changed(h, width, height);
@@ -295,7 +325,6 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
     {
         const auto& ro = h->resizeOpts;
         GdkGeometry geom{};
-        GdkWindowHints hintsMask = (GdkWindowHints)0;
         int minW = 1, minH = 1, maxW = G_MAXINT, maxH = G_MAXINT;
         if (ro.outerSize.hasMinWidth)  minW = std::max(minW, ro.outerSize.minWidth);
         if (ro.outerSize.hasMinHeight) minH = std::max(minH, ro.outerSize.minHeight);
@@ -307,18 +336,21 @@ static void gui_thread_func(GuiOptions opts, GuiHandle* h) {
         if (ro.innerSize.hasMaxWidth)  maxW = std::min(maxW, ro.innerSize.maxWidth);
         if (ro.innerSize.hasMaxHeight) maxH = std::min(maxH, ro.innerSize.maxHeight);
 
-        bool haveAny = ro.outerSize.hasMinWidth || ro.outerSize.hasMinHeight ||
-                       ro.outerSize.hasMaxWidth || ro.outerSize.hasMaxHeight ||
-                       ro.innerSize.hasMinWidth || ro.innerSize.hasMinHeight ||
-                       ro.innerSize.hasMaxWidth || ro.innerSize.hasMaxHeight ||
-                       ro.axis != "both";
+        bool haveAny = has_any_resize_constraints(ro);
         if (haveAny) {
+            if (ro.axis == "widthOnly") {
+                minH = maxH = opts.height;
+            } else if (ro.axis == "heightOnly") {
+                minW = maxW = opts.width;
+            } else if (ro.axis == "none") {
+                minW = maxW = opts.width;
+                minH = maxH = opts.height;
+            }
             geom.min_width  = minW;
             geom.min_height = minH;
             geom.max_width  = maxW;
             geom.max_height = maxH;
-            hintsMask = (GdkWindowHints)(GDK_HINT_MIN_SIZE | GDK_HINT_MAX_SIZE);
-            gtk_window_set_geometry_hints(GTK_WINDOW(window), nullptr, &geom, hintsMask);
+            apply_resize_hints(GTK_WINDOW(window), &geom, true);
         }
         // Axis lock is finalized once we know the realized outer size.
     }
@@ -386,10 +418,23 @@ static gboolean move_idle(gpointer data) {
 static gboolean resize_idle(gpointer data) {
     ResizeData* req = static_cast<ResizeData*>(data);
     if (req->handle && req->handle->window && GTK_IS_WIDGET(req->handle->window)) {
+        const bool hadConstraints = has_any_resize_constraints(req->handle->resizeOpts);
+        GtkWindow* gw = GTK_WINDOW(req->handle->window);
+        if (hadConstraints) {
+            apply_resize_hints(gw, nullptr, false);
+        }
+
         req->handle->lastResizeMs = nowMs();
+        req->handle->programmaticResizeInProgress = true;
         gtk_window_resize(GTK_WINDOW(req->handle->window),
                           req->innerWidth > 1 ? req->innerWidth : 1,
                           req->innerHeight > 1 ? req->innerHeight : 1);
+        req->handle->programmaticResizeInProgress = false;
+
+        if (hadConstraints) {
+            apply_resize_constraints_after_realize(req->handle->window, req->handle);
+        }
+
         if (req->handle->sizeOpts.emitOnProgrammaticResize) {
             if (req->handle->programmaticResizeIdleId != 0) {
                 g_source_remove(req->handle->programmaticResizeIdleId);

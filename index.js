@@ -228,8 +228,8 @@ function open(options) {
     if (ro === null || typeof ro !== 'object') {
       throw new TypeError('options.resizeOptions must be an object when provided');
     }
-    if (ro.axis !== undefined && !['both', 'widthOnly', 'heightOnly'].includes(ro.axis)) {
-      throw new TypeError("resizeOptions.axis must be 'both', 'widthOnly' or 'heightOnly'");
+    if (ro.axis !== undefined && !['both', 'widthOnly', 'heightOnly', 'none'].includes(ro.axis)) {
+      throw new TypeError("resizeOptions.axis must be 'both', 'widthOnly', 'heightOnly' or 'none'");
     }
     for (const group of ['innerSize', 'outerSize']) {
       if (ro[group] === undefined) continue;
