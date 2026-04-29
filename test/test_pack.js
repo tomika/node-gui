@@ -38,11 +38,20 @@ function matchPattern(str, pattern) {
 
 function shouldExclude(relPath, patterns) {
     const base = relPath.split('/').pop();
+    let excluded = false;
     for (const pattern of patterns) {
-        if (matchPattern(relPath, pattern)) return true;
-        if (matchPattern(base, pattern))    return true;
+        if (pattern.startsWith('!')) {
+            const keep = pattern.slice(1);
+            if (matchPattern(relPath, keep) || matchPattern(base, keep)) {
+                excluded = false;
+            }
+        } else {
+            if (matchPattern(relPath, pattern) || matchPattern(base, pattern)) {
+                excluded = true;
+            }
+        }
     }
-    return false;
+    return excluded;
 }
 
 function collectFiles(dir, excludePatterns, baseDir) {
@@ -157,6 +166,16 @@ test('does not exclude normal source files', () => {
 });
 test('does not exclude node_modules (only .bin inside)', () => {
     assert.ok(!shouldExclude('node_modules/express/index.js', DEFAULT_EXCLUDES));
+});
+
+test('node-gui keep-rules retain message bridge runtime file', () => {
+    const rules = [
+        'node_modules/node-gui/*',
+        '!node_modules/node-gui/lib',
+        '!node_modules/node-gui/lib/message-to-backend.js',
+    ];
+    assert.ok(!shouldExclude('node_modules/node-gui/lib', rules));
+    assert.ok(!shouldExclude('node_modules/node-gui/lib/message-to-backend.js', rules));
 });
 
 /* -------------------------------------------------------------------------

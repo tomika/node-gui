@@ -92,6 +92,8 @@ const DEFAULT_EXCLUDES = [
 const NODE_GUI_RUNTIME_KEEP_RULES = [
     'node_modules/node-gui/*',
     'node_modules/node-gui/.node-gui-tools',
+    '!node_modules/node-gui/lib',
+    '!node_modules/node-gui/lib/message-to-backend.js',
     'node_modules/node-gui/node_modules',
     '!node_modules/node-gui/index.js',
     '!node_modules/node-gui/package.json',
